@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1920" height="1080" viewBox="0 0 1920 1080">
+<defs><style>text{font-family:"Microsoft YaHei",Arial;}.wire{fill:none;stroke-linecap:round;stroke-linejoin:round;}.card{filter:drop-shadow(8px 12px 12px rgba(0,0,0,.14));}</style></defs>
+<rect class="" x="0" y="0" width="1920" height="1080" rx="0" fill="#f4f7fa" stroke="#f4f7fa" stroke-width="0"/>
+<rect class="" x="35" y="32" width="1850" height="1006" rx="38" fill="#e8edf2" stroke="#d7e2eb" stroke-width="2"/>
+<text x="78" y="112" font-family="Microsoft YaHei, Arial" font-size="42" font-weight="700" fill="#1e2a34" text-anchor="start">三工位 OBD 测试工装双层概念图</text>
+<text x="80" y="150" font-family="Microsoft YaHei, Arial" font-size="19" font-weight="400" fill="#5b697a" text-anchor="start">第一层安装接口与夹具，第二层做底部走线；两层通过铜柱分隔、穿板端子连接</text>
+<rect class="" x="70" y="165" width="410" height="157" rx="24" fill="#ffffff" stroke="#c8d4e0" stroke-width="2"/>
+<rect class="" x="100" y="202" width="350" height="76" rx="14" fill="#22303d" stroke="#46586a" stroke-width="2"/>
+<text x="126" y="258" font-family="Microsoft YaHei, Arial" font-size="32" font-weight="700" fill="#f0f8ff" text-anchor="start">外置 220V 便携电源</text>
+<rect class="" x="70" y="430" width="410" height="270" rx="24" fill="#ffffff" stroke="#c8d4e0" stroke-width="2"/>
+<text x="112" y="520" font-family="Microsoft YaHei, Arial" font-size="32" font-weight="700" fill="#1e2a34" text-anchor="start">逆变 / 12V分配模块</text>
+<rect class="" x="535" y="585" width="840" height="380" rx="30" fill="#eef5fa" stroke="#9bb2c8" stroke-width="3"/>
+<rect class="" x="535" y="145" width="840" height="430" rx="30" fill="#22303d" stroke="#4e647a" stroke-width="3"/>
+<text x="595" y="232" font-family="Microsoft YaHei, Arial" font-size="32" font-weight="700" fill="#f5f8fc" text-anchor="start">第一层：安装 / 接口层</text>
+<text x="595" y="672" font-family="Microsoft YaHei, Arial" font-size="32" font-weight="700" fill="#1e2a34" text-anchor="start">第二层：底部走线层</text>
+<rect class="" x="1430" y="165" width="405" height="800" rx="30" fill="#ffffff" stroke="#c8d4e0" stroke-width="2"/>
+<text x="1480" y="240" font-family="Microsoft YaHei, Arial" font-size="32" font-weight="700" fill="#1e2a34" text-anchor="start">安服优 F-1</text>
+<rect class="" x="567" y="310" width="236" height="215" rx="18" fill="#263646" stroke="#5b7288" stroke-width="2"/>
+<text x="685" y="352" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#f5f8fc" text-anchor="middle">工位 1</text>
+<g class="obd-socket"><rect class="" x="610" y="460" width="150" height="66" rx="10" fill="#121b24" stroke="#8c9eb0" stroke-width="2"/><circle cx="630.0" cy="480" r="5" fill="#c4cfda"/><circle cx="645.7142857142857" cy="480" r="5" fill="#c4cfda"/><circle cx="661.4285714285714" cy="480" r="5" fill="#c4cfda"/><circle cx="677.1428571428571" cy="480" r="5" fill="#c4cfda"/><circle cx="692.8571428571429" cy="480" r="5" fill="#c4cfda"/><circle cx="708.5714285714286" cy="480" r="5" fill="#c4cfda"/><circle cx="724.2857142857143" cy="480" r="5" fill="#c4cfda"/><circle cx="740.0" cy="480" r="5" fill="#c4cfda"/><circle cx="630.0" cy="505" r="5" fill="#c4cfda"/><circle cx="645.7142857142857" cy="505" r="5" fill="#c4cfda"/><circle cx="661.4285714285714" cy="505" r="5" fill="#c4cfda"/><circle cx="677.1428571428571" cy="505" r="5" fill="#c4cfda"/><circle cx="692.8571428571429" cy="505" r="5" fill="#c4cfda"/><circle cx="708.5714285714286" cy="505" r="5" fill="#c4cfda"/><circle cx="724.2857142857143" cy="505" r="5" fill="#c4cfda"/><circle cx="740.0" cy="505" r="5" fill="#c4cfda"/><text x="685" y="552" font-family="Microsoft YaHei, Arial" font-size="16" font-weight="400" fill="#dce8f3" text-anchor="middle">OBD-II 母口</text></g>
+<circle cx="685" cy="650" r="12" fill="#eff9ff" stroke="#0091dc" stroke-width="4"/>
+<line x1="685" y1="570" x2="685" y2="635" stroke="#0091dc" stroke-width="4" stroke-dasharray="12 8"/>
+<rect class="" x="837" y="310" width="236" height="215" rx="18" fill="#263646" stroke="#5b7288" stroke-width="2"/>
+<text x="955" y="352" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#f5f8fc" text-anchor="middle">工位 2</text>
+<g class="obd-socket"><rect class="" x="880" y="460" width="150" height="66" rx="10" fill="#121b24" stroke="#8c9eb0" stroke-width="2"/><circle cx="900.0" cy="480" r="5" fill="#c4cfda"/><circle cx="915.7142857142857" cy="480" r="5" fill="#c4cfda"/><circle cx="931.4285714285714" cy="480" r="5" fill="#c4cfda"/><circle cx="947.1428571428571" cy="480" r="5" fill="#c4cfda"/><circle cx="962.8571428571429" cy="480" r="5" fill="#c4cfda"/><circle cx="978.5714285714286" cy="480" r="5" fill="#c4cfda"/><circle cx="994.2857142857143" cy="480" r="5" fill="#c4cfda"/><circle cx="1010.0" cy="480" r="5" fill="#c4cfda"/><circle cx="900.0" cy="505" r="5" fill="#c4cfda"/><circle cx="915.7142857142857" cy="505" r="5" fill="#c4cfda"/><circle cx="931.4285714285714" cy="505" r="5" fill="#c4cfda"/><circle cx="947.1428571428571" cy="505" r="5" fill="#c4cfda"/><circle cx="962.8571428571429" cy="505" r="5" fill="#c4cfda"/><circle cx="978.5714285714286" cy="505" r="5" fill="#c4cfda"/><circle cx="994.2857142857143" cy="505" r="5" fill="#c4cfda"/><circle cx="1010.0" cy="505" r="5" fill="#c4cfda"/><text x="955" y="552" font-family="Microsoft YaHei, Arial" font-size="16" font-weight="400" fill="#dce8f3" text-anchor="middle">OBD-II 母口</text></g>
+<circle cx="955" cy="650" r="12" fill="#eff9ff" stroke="#0091dc" stroke-width="4"/>
+<line x1="955" y1="570" x2="955" y2="635" stroke="#0091dc" stroke-width="4" stroke-dasharray="12 8"/>
+<rect class="" x="1107" y="310" width="236" height="215" rx="18" fill="#263646" stroke="#5b7288" stroke-width="2"/>
+<text x="1225" y="352" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#f5f8fc" text-anchor="middle">工位 3</text>
+<g class="obd-socket"><rect class="" x="1150" y="460" width="150" height="66" rx="10" fill="#121b24" stroke="#8c9eb0" stroke-width="2"/><circle cx="1170.0" cy="480" r="5" fill="#c4cfda"/><circle cx="1185.7142857142858" cy="480" r="5" fill="#c4cfda"/><circle cx="1201.4285714285713" cy="480" r="5" fill="#c4cfda"/><circle cx="1217.142857142857" cy="480" r="5" fill="#c4cfda"/><circle cx="1232.857142857143" cy="480" r="5" fill="#c4cfda"/><circle cx="1248.5714285714287" cy="480" r="5" fill="#c4cfda"/><circle cx="1264.2857142857142" cy="480" r="5" fill="#c4cfda"/><circle cx="1280.0" cy="480" r="5" fill="#c4cfda"/><circle cx="1170.0" cy="505" r="5" fill="#c4cfda"/><circle cx="1185.7142857142858" cy="505" r="5" fill="#c4cfda"/><circle cx="1201.4285714285713" cy="505" r="5" fill="#c4cfda"/><circle cx="1217.142857142857" cy="505" r="5" fill="#c4cfda"/><circle cx="1232.857142857143" cy="505" r="5" fill="#c4cfda"/><circle cx="1248.5714285714287" cy="505" r="5" fill="#c4cfda"/><circle cx="1264.2857142857142" cy="505" r="5" fill="#c4cfda"/><circle cx="1280.0" cy="505" r="5" fill="#c4cfda"/><text x="1225" y="552" font-family="Microsoft YaHei, Arial" font-size="16" font-weight="400" fill="#dce8f3" text-anchor="middle">OBD-II 母口</text></g>
+<circle cx="1225" cy="650" r="12" fill="#eff9ff" stroke="#0091dc" stroke-width="4"/>
+<line x1="1225" y1="570" x2="1225" y2="635" stroke="#0091dc" stroke-width="4" stroke-dasharray="12 8"/>
+<line x1="575" y1="575" x2="575" y2="625" stroke="#c9922f" stroke-width="12" stroke-linecap="round"/>
+<circle cx="575" cy="575" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<circle cx="575" cy="625" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<line x1="795" y1="575" x2="795" y2="625" stroke="#c9922f" stroke-width="12" stroke-linecap="round"/>
+<circle cx="795" cy="575" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<circle cx="795" cy="625" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<line x1="1115" y1="575" x2="1115" y2="625" stroke="#c9922f" stroke-width="12" stroke-linecap="round"/>
+<circle cx="1115" cy="575" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<circle cx="1115" cy="625" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<line x1="1335" y1="575" x2="1335" y2="625" stroke="#c9922f" stroke-width="12" stroke-linecap="round"/>
+<circle cx="1335" cy="575" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<circle cx="1335" cy="625" r="18" fill="#fff1c6" stroke="#c9922f" stroke-width="4"/>
+<path class="wire" d="M 430,568 L 500,568 L 500,760 L 1180,760 L 1180,625" fill="none" stroke="#e0b12a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="430" cy="568" r="9" fill="#e0b12a" stroke="#fff" stroke-width="2"/><circle cx="1180" cy="625" r="9" fill="#e0b12a" stroke="#fff" stroke-width="2"/>
+<path class="wire" d="M 430,603 L 500,603 L 500,795 L 685,795 L 685,650" fill="none" stroke="#ee8426" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="430" cy="603" r="9" fill="#ee8426" stroke="#fff" stroke-width="2"/><circle cx="685" cy="650" r="9" fill="#ee8426" stroke="#fff" stroke-width="2"/>
+<path class="wire" d="M 430,638 L 500,638 L 500,830 L 955,830 L 955,650" fill="none" stroke="#ee8426" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="430" cy="638" r="9" fill="#ee8426" stroke="#fff" stroke-width="2"/><circle cx="955" cy="650" r="9" fill="#ee8426" stroke="#fff" stroke-width="2"/>
+<path class="wire" d="M 430,673 L 500,673 L 500,865 L 1225,865 L 1225,650" fill="none" stroke="#ee8426" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="430" cy="673" r="9" fill="#ee8426" stroke="#fff" stroke-width="2"/><circle cx="1225" cy="650" r="9" fill="#ee8426" stroke="#fff" stroke-width="2"/>
+<path class="wire" d="M 685,650 L 685,900 L 1418,900 L 1418,355 L 1485,355" fill="none" stroke="#1fa05a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="685" cy="650" r="9" fill="#1fa05a" stroke="#fff" stroke-width="2"/><circle cx="1485" cy="355" r="9" fill="#1fa05a" stroke="#fff" stroke-width="2"/>
+<path class="wire" d="M 955,650 L 955,872 L 1426,872 L 1426,585 L 1485,585" fill="none" stroke="#1fa05a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="955" cy="650" r="9" fill="#1fa05a" stroke="#fff" stroke-width="2"/><circle cx="1485" cy="585" r="9" fill="#1fa05a" stroke="#fff" stroke-width="2"/>
+<path class="wire" d="M 1225,650 L 1225,844 L 1434,844 L 1434,815 L 1485,815" fill="none" stroke="#1fa05a" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/><circle cx="1225" cy="650" r="9" fill="#1fa05a" stroke="#fff" stroke-width="2"/><circle cx="1485" cy="815" r="9" fill="#1fa05a" stroke="#fff" stroke-width="2"/>
+<rect class="" x="1485" y="279" width="307" height="152" rx="20" fill="#ffffff" stroke="#c8d4e0" stroke-width="2"/>
+<rect class="" x="1518" y="312" width="70" height="86" rx="10" fill="#22303d" stroke="#46586a" stroke-width="2"/>
+<text x="1553" y="363" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#53f485" text-anchor="middle">F-1</text>
+<text x="1615" y="347" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#1e2a34" text-anchor="start">日志模块 1</text>
+<rect class="" x="1485" y="509" width="307" height="152" rx="20" fill="#ffffff" stroke="#c8d4e0" stroke-width="2"/>
+<rect class="" x="1518" y="542" width="70" height="86" rx="10" fill="#22303d" stroke="#46586a" stroke-width="2"/>
+<text x="1553" y="593" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#53f485" text-anchor="middle">F-1</text>
+<text x="1615" y="577" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#1e2a34" text-anchor="start">日志模块 2</text>
+<rect class="" x="1485" y="739" width="307" height="152" rx="20" fill="#ffffff" stroke="#c8d4e0" stroke-width="2"/>
+<rect class="" x="1518" y="772" width="70" height="86" rx="10" fill="#22303d" stroke="#46586a" stroke-width="2"/>
+<text x="1553" y="823" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#53f485" text-anchor="middle">F-1</text>
+<text x="1615" y="807" font-family="Microsoft YaHei, Arial" font-size="24" font-weight="700" fill="#1e2a34" text-anchor="start">日志模块 3</text>
+</svg>
