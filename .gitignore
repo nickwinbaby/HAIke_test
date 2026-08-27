@@ -32,6 +32,11 @@ Thumbs.db
 *.7z
 *.rar
 
+# picture
+*.ico
+*.png
+*.jpg
+
 # Local installer/tool binaries
 auto_test_reboot/tools/
 
