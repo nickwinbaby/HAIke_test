@@ -1,0 +1,8 @@
+{
+  "name": "两条完整流程验证套件",
+  "case_interval_seconds": 30,
+  "cases": [
+    "case_001_电压归零等待30秒.json",
+    "case_002_电压归零等待30秒.json"
+  ]
+}

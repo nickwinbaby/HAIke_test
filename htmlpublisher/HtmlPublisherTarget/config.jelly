@@ -1,0 +1,50 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" 
+         xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form">
+  
+  <f:entry field="reportDir" title="${%reportDir.title}">
+    <f:textbox/>
+  </f:entry>
+
+  <f:entry field="reportFiles" title="${%reportFiles.title}">
+    <f:textbox default="index.html"/>
+  </f:entry>
+
+   <f:entry field="reportTitles" title="${%reportTitles.title}">
+    <f:textbox />
+    </f:entry>
+
+
+  <f:entry field="reportName" title="${%reportName.title}">
+    <f:textbox default="HTML Report"/>
+  </f:entry>
+
+  <f:advanced title="${%Publishing options}">
+    <f:entry field="keepAll" title="${%keepAll.title}">
+      <f:checkbox />
+    </f:entry>
+    
+    <f:entry field="alwaysLinkToLastBuild" title="${%alwaysLinkToLastBuild.title}">
+      <f:checkbox/>
+    </f:entry>
+    
+    <f:entry field="allowMissing" title="${%allowMissing.title}">
+      <f:checkbox/>
+    </f:entry>
+    <f:entry field="includes" title="${%reportFiles.includes}" description="${%reportFiles.includesHelp}">
+      <f:textbox default="**/*"/>
+    </f:entry>
+      <f:entry field="escapeUnderscores" title="${%escapeUnderscores.title}">
+        <f:checkbox default="true"/>
+      </f:entry>
+    <f:entry field="useWrapperFileDirectly" title="${%useWrapperFileDirectly.title}">
+      <f:checkbox default="true"/>
+    </f:entry>
+    <f:entry field="numberOfWorkers" title="${%numberOfWorkers.title}">
+      <f:number/>
+    </f:entry>
+    <f:entry field="icon" title="${%icon.title}">
+      <f:textbox />
+    </f:entry>
+  </f:advanced>
+</j:jelly>

@@ -4277,11 +4277,14 @@ class DataFetcherApp(QWidget):
 
                 historical_total_fuel_consumption = int(line[176:184], 16)  # 历史总油耗
                 historical_total_driving_time = int(line[184:192], 16)  # 历史总驾驶时间
-
-                seatbelt_int = int(line[192:194], 16)  # 安全带状态
-                seatbelt_bin = format(seatbelt_int, '08b')
-                seatbelt_bits_0_to_3 = seatbelt_bin[-4:]
-                seatbelt_status = str(seatbelt_bits_0_to_3)
+                seatbelt_hex = line[192:194].upper()
+                if seatbelt_hex == "FF":
+                    seatbelt_status = "FF"
+                else:
+                    seatbelt_int = int(seatbelt_hex, 16)
+                    seatbelt_bin = format(seatbelt_int, '08b')
+                    seatbelt_bits_0_to_3 = seatbelt_bin[-4:]
+                    seatbelt_status = str(seatbelt_bits_0_to_3)
 
                 odometer = "FFFFFFFF" if line[194:202].upper() == "FFFFFFFF" else int(line[194:202], 16)  # 里程表读数
                 average_fuel_consumption = "FFFFFFFF" if line[202:210].upper() == "FFFFFFFF" else int(line[202:210],
@@ -4292,7 +4295,7 @@ class DataFetcherApp(QWidget):
                 elif odometer_unit_hex == "02":
                     odometer_unit = "Mile"
                 elif odometer_unit_hex.lower() == "ff":
-                    odometer_unit = "Unkn"
+                    odometer_unit = "FF"
                 else:
                     odometer_unit = odometer_unit_hex
 
@@ -4327,10 +4330,14 @@ class DataFetcherApp(QWidget):
                 engine_run_time = "FFFFFFFF" if line[240:248].upper() == "FFFFFFFF" else int(line[240:248],
                                                                                              16)  # 发动机运行时间
                 fuel_type = "FF" if line[248:250].upper() == "FF" else line[248:250]  # 燃油类型
-                turn_signals_status_int = int(line[250:252], 16)  # 转向灯状态
-                turn_signals_status_bin = format(turn_signals_status_int, '08b')
-                turn_signals_status_bits_0_to_1 = turn_signals_status_bin[-2:]
-                turn_signals_status = str(turn_signals_status_bits_0_to_1)
+                turn_signals_status_hex = line[250:252].upper()
+                if turn_signals_status_hex == "FF":
+                    turn_signals_status = "FF"
+                else:
+                    turn_signals_status_int = int(turn_signals_status_hex, 16)
+                    turn_signals_status_bin = format(turn_signals_status_int, '08b')
+                    turn_signals_status_bits_0_to_1 = turn_signals_status_bin[-2:]
+                    turn_signals_status = str(turn_signals_status_bits_0_to_1)
 
                 dataflow_tail_fields = [
                     ("dataflow_imei_checkbox", imei, 20),

@@ -1,0 +1,71 @@
+{
+  "name": "完整流程验证-01",
+  "power": {
+    "baudrate": 9600,
+    "current": 2.0,
+    "initial_voltage": 0.0
+  },
+  "can": {
+    "backend": "winusb",
+    "vid": "0x04D8",
+    "pid": "0x0053",
+    "channel_index": 0,
+    "bitrate": 500000
+  },
+  "steps": [
+    {
+      "name": "搜索并连接程控电源USB",
+      "action": "power.connect"
+    },
+    {
+      "name": "程控电源调节到12V并输出",
+      "action": "power.set_voltage",
+      "voltage": 12.0,
+      "output": "on"
+    },
+    {
+      "name": "等待60秒",
+      "action": "wait",
+      "seconds": 60
+    },
+    {
+      "name": "2秒内从12V逐步升到14.5V",
+      "action": "power.ramp_voltage",
+      "from": 12.0,
+      "to": 14.5,
+      "duration": 2,
+      "steps": 20
+    },
+    {
+      "name": "CAN模拟开始工作",
+      "action": "can.start"
+    },
+    {
+      "name": "CAN持续工作2分钟",
+      "action": "wait",
+      "seconds": 120
+    },
+    {
+      "name": "CAN停止工作",
+      "action": "can.stop"
+    },
+    {
+      "name": "2秒内从14.5V逐步降到12V",
+      "action": "power.ramp_voltage",
+      "from": 14.5,
+      "to": 12.0,
+      "duration": 2,
+      "steps": 20
+    },
+    {
+      "name": "等待90秒",
+      "action": "wait",
+      "seconds": 90
+    },
+    {
+      "name": "程控电源断电为0V",
+      "action": "power.output_off",
+      "voltage": 0.0
+    }
+  ]
+}

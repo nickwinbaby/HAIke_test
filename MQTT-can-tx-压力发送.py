@@ -78,16 +78,16 @@ class MQTTHexPressureTool:
 
         row += 1
 
-        tk.Label(self.root, text="单条间隔(秒)：", width=label_w, anchor="e").grid(row=row, column=0)
+        tk.Label(self.root, text="单条间隔(ms)：", width=label_w, anchor="e").grid(row=row, column=0)
         self.interval = tk.Entry(self.root, width=entry_w)
         self.interval.insert(0, "0")
         self.interval.grid(row=row, column=1)
 
         row += 1
 
-        tk.Label(self.root, text="循环间隔(秒)：", width=label_w, anchor="e").grid(row=row, column=0)
+        tk.Label(self.root, text="循环间隔(ms)：", width=label_w, anchor="e").grid(row=row, column=0)
         self.loop_interval = tk.Entry(self.root, width=entry_w)
-        self.loop_interval.insert(0, "30")
+        self.loop_interval.insert(0, "30000")
         self.loop_interval.grid(row=row, column=1)
 
         row += 1
@@ -207,8 +207,8 @@ class MQTTHexPressureTool:
     def run(self):
 
         topic = self.topic.get().strip()
-        interval = float(self.interval.get())
-        loop_interval = float(self.loop_interval.get())
+        interval_ms = float(self.interval.get())
+        loop_interval_ms = float(self.loop_interval.get())
         repeat = int(self.repeat.get())
 
         wb = load_workbook(self.excel_path)
@@ -264,14 +264,14 @@ class MQTTHexPressureTool:
 
                 row += 1
 
-                if interval > 0:
-                    time.sleep(interval)
+                if interval_ms > 0:
+                    time.sleep(interval_ms / 1000.0)
 
             self.log(f"====== 第{r+1}轮结束 ======")
 
             if r != repeat - 1:
-                self.log(f"等待 {loop_interval}s ...")
-                time.sleep(loop_interval)
+                self.log(f"等待 {loop_interval_ms}ms ...")
+                time.sleep(loop_interval_ms / 1000.0)
 
         self.log("全部完成")
 

@@ -78,14 +78,49 @@ def extract_timestamp(line):
             pass
     return None
 
+def parse_nmea_coordinate(value, direction, max_degree):
+    value = value.strip()
+    direction = direction.strip().upper()
+    if not value or direction not in {"N", "S", "E", "W"}:
+        return None
+
+    try:
+        raw_coord = float(value)
+    except ValueError:
+        return None
+
+    degrees = int(raw_coord // 100)
+    minutes = raw_coord - degrees * 100
+    if degrees > max_degree or minutes >= 60:
+        return None
+
+    decimal = degrees + minutes / 60
+    if direction in {"S", "W"}:
+        decimal = -decimal
+    return decimal
+
+def has_valid_gga_coordinate(parts):
+    if len(parts) <= 5:
+        return False
+
+    lat = parse_nmea_coordinate(parts[2], parts[3], 90)
+    lon = parse_nmea_coordinate(parts[4], parts[5], 180)
+    if lat is None or lon is None:
+        return False
+
+    # 未定位时常见占位坐标：0000.00000,N,00000.00000,E
+    return not (abs(lat) < 1e-12 and abs(lon) < 1e-12)
+
 def is_valid_nmea(nmea_line, skip_loc_check=False):
     parts = nmea_line.split(",")
     if skip_loc_check:
-        if len(parts) > 4 and parts[2].strip() and parts[4].strip():
-            return True
-        return False
+        return has_valid_gga_coordinate(parts)
     else:
-        return len(parts) > 6 and parts[6].strip() in VALID_GGA_FIX_QUALITY
+        return (
+            len(parts) > 6
+            and parts[6].strip() in VALID_GGA_FIX_QUALITY
+            and has_valid_gga_coordinate(parts)
+        )
 
 def process_file(file_path, boot_keyword, nmea_keyword, skip_loc_check, output_box):
     file_path = file_path.strip()
@@ -109,7 +144,7 @@ def process_file(file_path, boot_keyword, nmea_keyword, skip_loc_check, output_b
     output_box.insert(tk.END, f"=== 开始分析日志：{os.path.basename(file_path)} ===\n")
     output_box.insert(tk.END, f"启动匹配关键字：{boot_keyword}\n")
     output_box.insert(tk.END, f"定位NMEA语句：{nmea_keyword}\n")
-    rule_desc = "仅检查经纬度（不校验GGA状态码）" if skip_loc_check else "校验GGA状态码（1/2/3/4/5）"
+    rule_desc = "仅检查有效经纬度（不校验GGA状态码）" if skip_loc_check else "校验GGA状态码（1/2/3/4/5）和有效经纬度"
     output_box.insert(tk.END, f"定位判定规则：{rule_desc}\n")
     output_box.insert(tk.END, "="*45 + "\n")
     output_box.update()
@@ -194,7 +229,7 @@ def process_file(file_path, boot_keyword, nmea_keyword, skip_loc_check, output_b
         output_box.insert(tk.END,
             f"无任何有效冷热启动耗时记录！排查方向：\n"
             f"1. 启动关键字「{boot_keyword}」是否和日志完全一致\n"
-            f"2. 勾选【仅检查经纬度（不校验GGA状态码）】使用宽松匹配规则\n"
+            f"2. 勾选【仅检查有效经纬度（不校验GGA状态码）】使用宽松匹配规则\n"
             f"3. 确认日志内存在{nmea_keyword}语句\n"
         )
     else:
@@ -262,7 +297,7 @@ def run_gui():
     skip_check_var = tk.BooleanVar()
     skip_check_var.set(False)
     tk.Checkbutton(
-        root, text="仅检查经纬度（不校验GGA状态码）",
+        root, text="仅检查有效经纬度（不校验GGA状态码）",
         variable=skip_check_var
     ).grid(row=3, column=1, sticky='w', padx=4, pady=2)
 

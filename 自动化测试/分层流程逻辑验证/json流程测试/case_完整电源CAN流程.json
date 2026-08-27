@@ -1,0 +1,71 @@
+{
+  "name": "完整电源CAN流程",
+  "power": {
+    "baudrate": 9600,
+    "current": 2.0,
+    "initial_voltage": 0.0
+  },
+  "can": {
+    "backend": "winusb",
+    "vid": "0x04D8",
+    "pid": "0x0053",
+    "channel_index": 0,
+    "bitrate": 500000
+  },
+  "steps": [
+    {
+      "name": "连接程控电源",
+      "action": "power.connect"
+    },
+    {
+      "name": "设置12V并打开输出",
+      "action": "power.set_voltage",
+      "voltage": 12.0,
+      "output": "on"
+    },
+    {
+      "name": "等待60秒",
+      "action": "wait",
+      "seconds": 60
+    },
+    {
+      "name": "2秒内逐步升到14.5V",
+      "action": "power.ramp_voltage",
+      "from": 12.0,
+      "to": 14.5,
+      "duration": 2,
+      "steps": 20
+    },
+    {
+      "name": "启动CAN模拟",
+      "action": "can.start"
+    },
+    {
+      "name": "CAN持续工作2分钟",
+      "action": "wait",
+      "seconds": 120
+    },
+    {
+      "name": "停止CAN模拟",
+      "action": "can.stop"
+    },
+    {
+      "name": "2秒内逐步降到12V",
+      "action": "power.ramp_voltage",
+      "from": 14.5,
+      "to": 12.0,
+      "duration": 2,
+      "steps": 20
+    },
+    {
+      "name": "等待90秒",
+      "action": "wait",
+      "seconds": 90
+    },
+    {
+      "name": "程控电源设置0V并断开输出",
+      "action": "power.output_off",
+      "voltage": 0.0
+    }
+  ]
+}

@@ -16,6 +16,7 @@ from collections import deque
 from datetime import datetime, timezone, timedelta
 import json
 import os
+import sys
 import queue
 import time
 import logging
@@ -42,6 +43,16 @@ KEY_BYTES = hex_to_bytes(FIXED_KEY_HEX)
 
 # 固定 IV
 IV_BYTES = bytes.fromhex("19e4f7a83d0b6c25a81234567890abcd")
+
+
+def app_base_dir():
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def topic_file_path():
+    return os.path.join(app_base_dir(), TOPICS_SAVE_FILE)
 
 def decrypt_encrypted_string(encrypted_bytes: bytes) -> str:
     """
@@ -795,18 +806,23 @@ class MQTT_AES_Pro_v2(tk.Tk):
     # -------------------------
     def _save_topics_to_disk(self):
         arr = [entry.get().strip() for _, entry in self.sub_entries if entry.get().strip()]
+        path = topic_file_path()
         try:
-            with open(TOPICS_SAVE_FILE, "w", encoding="utf-8") as f:
+            folder = os.path.dirname(path)
+            if folder:
+                os.makedirs(folder, exist_ok=True)
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump(arr, f, ensure_ascii=False, indent=2)
-            self._append_plain(f"[INFO] Saved {len(arr)} topics to {TOPICS_SAVE_FILE}")
+            self._append_plain(f"[INFO] Saved {len(arr)} topics to {path}")
         except Exception as e:
             messagebox.showerror("Error", f"Save topics failed: {e}")
 
     def _load_topics_from_disk(self):
-        if not os.path.exists(TOPICS_SAVE_FILE):
+        path = topic_file_path()
+        if not os.path.exists(path):
             return
         try:
-            with open(TOPICS_SAVE_FILE, "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 arr = json.load(f)
 
             for row, _ in self.sub_entries:
@@ -816,7 +832,7 @@ class MQTT_AES_Pro_v2(tk.Tk):
             for t in arr:
                 self._add_subscription_row(t)
 
-            self._append_plain(f"[INFO] Loaded {len(arr)} topics from {TOPICS_SAVE_FILE}")
+            self._append_plain(f"[INFO] Loaded {len(arr)} topics from {path}")
         except Exception as e:
             logging.exception("Load topics failed: %s", e)
 

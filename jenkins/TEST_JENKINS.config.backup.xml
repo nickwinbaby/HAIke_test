@@ -1,0 +1,28 @@
+﻿<?xml version="1.1" encoding="UTF-8"?>
+<project>
+  <actions/>
+  <description></description>
+  <keepDependencies>false</keepDependencies>
+  <properties/>
+  <scm class="hudson.scm.NullSCM"/>
+  <canRoam>true</canRoam>
+  <disabled>false</disabled>
+  <blockBuildWhenDownstreamBuilding>false</blockBuildWhenDownstreamBuilding>
+  <blockBuildWhenUpstreamBuilding>false</blockBuildWhenUpstreamBuilding>
+  <triggers/>
+  <concurrentBuild>false</concurrentBuild>
+  <builders>
+    <hudson.tasks.BatchFile>
+      <command>@echo on&#xd;
+chcp 65001 &gt;nul&#xd;
+set PYTHONUTF8=1&#xd;
+set PYTHONIOENCODING=utf-8&#xd;
+cd /d C:\Users\G1006871\Desktop\BIANYI&#xd;
+D:\Python310\python.exe -m robot --nostatusrc -d auto_test_reboot\results -v DRY_RUN:True -v TIME_SCALE:0.01 -t &quot;å®æ´çµæºCANæµç¨éªè¯&quot; auto_test_reboot\tests&#xd;
+exit /b %ERRORLEVEL%</command>
+      <configuredLocalRules/>
+    </hudson.tasks.BatchFile>
+  </builders>
+  <publishers/>
+  <buildWrappers/>
+</project>

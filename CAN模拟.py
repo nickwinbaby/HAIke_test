@@ -1,7 +1,6 @@
 import ctypes
 import os
 import queue
-import random
 import threading
 import time
 import tkinter as tk
@@ -19,6 +18,7 @@ WINUSB_VID = 0x04D8
 WINUSB_PID = 0x0053
 CAN_CHANNEL_INDEX = 0
 CAN_BITRATE = 500000
+CAN_ID_FORMAT = "11bit"
 
 # ====================== OBD仿真配置 ======================
 VIN = "LSIM2026071300001"  # 必须17位，VIN查询会用ISO-TP多帧返回
@@ -26,16 +26,54 @@ ECU_RESPONSE_ID = 0x7E8
 FUNCTIONAL_REQUEST_ID = 0x7DF
 PHYSICAL_REQUEST_BASE = 0x7E0
 PHYSICAL_REQUEST_END = 0x7E7
-RESPOND_EXTENDED_29BIT = False
+RESPOND_EXTENDED_29BIT = True
+SUPPORTED_BITRATES = {250000, 500000}
+SUPPORTED_ID_FORMATS = {"11bit", "29bit"}
+EXT_FUNCTIONAL_REQUEST_BASE = 0x18DB3300
+EXT_PHYSICAL_REQUEST_BASE = 0x18DA0000
+EXT_OBD_ECU_ADDR = 0x10
+CAN_BOX_STATUS_IDS = {0x01020800, 0x01020801}
+DUPLICATE_REQUEST_TX_GAP_SEC = 0.12
+USB_CAN_TX_MID = bytes.fromhex("A8 A8 3F DA")
+USB_CAN_TX_TRAILER = bytes.fromhex("8B 02 00 00")
 
-SPEED_RISE_MAX = 120
-SPEED_STA_MIN = 100
-SPEED_STA_MAX = 120
-DEFAULT_SPEED = 75.0
-DEFAULT_RPM = 431
-RPM_MIN = 1000
-RPM_MAX = 3000
-DATA_UPDATE_INTERVAL = 0.1
+SPEED_RISE_MAX = 255
+SPEED_STA_MIN = 0
+SPEED_STA_MAX = 255
+SPEED_STEP_KMH = 1.0
+DEFAULT_SPEED = 179.0
+DEFAULT_RPM = 4500
+RPM_MIN = 4500
+RPM_MAX = 6000
+RPM_STEP = 1
+DATA_UPDATE_INTERVAL = 0.28
+
+SIM_PROFILES = {
+    ("11bit", 500000): {
+        "tx_mid": bytes.fromhex("A8 A8 3F DA"),
+        "tx_trailer": bytes.fromhex("8B 02 00 00"),
+        "speed_start": 179.0,
+        "rpm_start": 4500,
+    },
+    ("11bit", 250000): {
+        "tx_mid": bytes.fromhex("E8 F7 B7 0A"),
+        "tx_trailer": bytes.fromhex("22 01 00 00"),
+        "speed_start": 31.0,
+        "rpm_start": 134,
+    },
+    ("29bit", 500000): {
+        "tx_mid": bytes.fromhex("A8 D1 14 A7"),
+        "tx_trailer": bytes.fromhex("52 01 00 00"),
+        "speed_start": 44.0,
+        "rpm_start": 146,
+    },
+    ("29bit", 250000): {
+        "tx_mid": bytes.fromhex("A8 D1 14 A7"),
+        "tx_trailer": bytes.fromhex("52 01 00 00"),
+        "speed_start": 151.0,
+        "rpm_start": 351,
+    },
+}
 
 COOLANT_TEMP_C = 17
 FUEL_LEVEL_PERCENT = 93
@@ -57,14 +95,116 @@ LONG_FUEL_TRIM_BANK1_PERCENT = 0
 SHORT_FUEL_TRIM_BANK2_PERCENT = 0
 LONG_FUEL_TRIM_BANK2_PERCENT = 0
 O2_SENSOR_VOLTAGE_V = 0.45
+FUEL_PRESSURE_KPA = 51
+AMBIENT_AIR_TEMP_C = -23
+ODO_KM = 50
+BATTERY_SOH_PERCENT = 98
+BATTERY_CURRENT_A = 0.0
+BATTERY_VOLTAGE_V = 12.6
+BATTERY_TEMP_C = 25
+CATALYST_TEMP_C = 350
+FUEL_RAIL_PRESSURE_KPA = 3000
+EVAP_PRESSURE_PA = 0
+BAROMETRIC_PRESSURE_KPA = 101
+CONTROL_MODULE_VOLTAGE_V = 13.8
+COMMANDED_EQUIV_RATIO = 1.0
+MAX_AIR_FLOW_GPS = 655
+ETHANOL_PERCENT = 0
+ABSOLUTE_EVAP_PRESSURE_KPA = 100
+BATTERY_PACK_CHARGING_STATE = 0
+TURN_SIGNAL_STATUS = 0
 
-SUPPORTED_MODE01_PIDS = {
-    0x01, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09,
-    0x0B, 0x0C, 0x0D, 0x0F, 0x10, 0x11,
-    0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x1B,
-    0x1C, 0x1F, 0x20, 0x21, 0x2F, 0x31, 0x40,
-    0x43, 0x51, 0x5B, 0x5C, 0x5E,
+# Mode 01 is the standard J1979/ISO15765 PID space, so keep it broad.
+# Grey UI items are filtered by not answering private UDS DID / private CAN IDs,
+# not by shrinking Mode 01 compatibility.
+SUPPORTED_MODE01_PIDS = set(range(0x01, 0x24))
+SUPPORTED_MODE01_PIDS.update(range(0x24, 0x2C))
+SUPPORTED_MODE01_PIDS.update(range(0x2C, 0x34))
+SUPPORTED_MODE01_PIDS.update(range(0x34, 0x40))
+SUPPORTED_MODE01_PIDS.update(range(0x40, 0x50))
+SUPPORTED_MODE01_PIDS.update(range(0x50, 0x60))
+SUPPORTED_MODE01_PIDS.update({0x60, 0x62, 0x66, 0x80, 0x9A, 0xA0, 0xA6, 0xB2, 0xB7})
+SUPPORTED_MODE01_MASK_PIDS = {0x00, 0x20, 0x40, 0x60, 0x80, 0xA0}
+
+DEFAULT_MODE01_PID_VALUES = {
+    0x02: 0,
+    0x03: 2,
+    0x04: CALCULATED_LOAD_PERCENT,
+    0x05: COOLANT_TEMP_C,
+    0x06: SHORT_FUEL_TRIM_BANK1_PERCENT,
+    0x07: LONG_FUEL_TRIM_BANK1_PERCENT,
+    0x08: SHORT_FUEL_TRIM_BANK2_PERCENT,
+    0x09: LONG_FUEL_TRIM_BANK2_PERCENT,
+    0x0A: FUEL_PRESSURE_KPA,
+    0x0B: INTAKE_PRESSURE_KPA,
+    0x0C: DEFAULT_RPM,
+    0x0D: DEFAULT_SPEED,
+    0x0E: 0,
+    0x0F: INTAKE_AIR_TEMP_C,
+    0x10: MAF_GPS,
+    0x11: THROTTLE_PERCENT,
+    0x12: 1,
+    0x13: 0x03,
+    0x14: O2_SENSOR_VOLTAGE_V,
+    0x15: O2_SENSOR_VOLTAGE_V,
+    0x16: O2_SENSOR_VOLTAGE_V,
+    0x17: O2_SENSOR_VOLTAGE_V,
+    0x18: O2_SENSOR_VOLTAGE_V,
+    0x19: O2_SENSOR_VOLTAGE_V,
+    0x1A: O2_SENSOR_VOLTAGE_V,
+    0x1B: O2_SENSOR_VOLTAGE_V,
+    0x1C: 6,
+    0x1D: 0x03,
+    0x1E: 0,
+    0x1F: RUN_TIME_SEC,
+    0x21: MIL_DISTANCE_KM,
+    0x22: FUEL_RAIL_PRESSURE_KPA,
+    0x23: FUEL_RAIL_PRESSURE_KPA,
+    0x2F: FUEL_LEVEL_PERCENT,
+    0x30: 1,
+    0x31: CLEAR_DISTANCE_KM,
+    0x32: EVAP_PRESSURE_PA,
+    0x33: BAROMETRIC_PRESSURE_KPA,
+    0x43: ABSOLUTE_LOAD_PERCENT,
+    0x44: COMMANDED_EQUIV_RATIO,
+    0x45: THROTTLE_PERCENT,
+    0x46: AMBIENT_AIR_TEMP_C,
+    0x47: THROTTLE_PERCENT,
+    0x48: THROTTLE_PERCENT,
+    0x49: THROTTLE_PERCENT,
+    0x4A: THROTTLE_PERCENT,
+    0x4B: THROTTLE_PERCENT,
+    0x4C: THROTTLE_PERCENT,
+    0x4D: RUN_TIME_SEC,
+    0x4E: CLEAR_DISTANCE_KM,
+    0x50: MAX_AIR_FLOW_GPS,
+    0x51: FUEL_TYPE,
+    0x52: ETHANOL_PERCENT,
+    0x53: ABSOLUTE_EVAP_PRESSURE_KPA,
+    0x54: EVAP_PRESSURE_PA,
+    0x5B: HYBRID_SOC_PERCENT,
+    0x5C: OIL_TEMP_C,
+    0x5D: 0,
+    0x5E: FUEL_RATE_LPH,
+    0x5F: 0,
+    0x62: 0,
+    0x9A: 0,
+    0xA6: ODO_KM,
+    0xB2: BATTERY_SOH_PERCENT,
+    0xB7: BATTERY_TEMP_C,
 }
+for _pid in range(0x24, 0x2C):
+    DEFAULT_MODE01_PID_VALUES.setdefault(_pid, COMMANDED_EQUIV_RATIO)
+for _pid in range(0x2C, 0x2F):
+    DEFAULT_MODE01_PID_VALUES.setdefault(_pid, 0)
+for _pid in range(0x34, 0x3C):
+    DEFAULT_MODE01_PID_VALUES.setdefault(_pid, COMMANDED_EQUIV_RATIO)
+for _pid in range(0x3C, 0x40):
+    DEFAULT_MODE01_PID_VALUES.setdefault(_pid, CATALYST_TEMP_C)
+for _pid in range(0x55, 0x59):
+    DEFAULT_MODE01_PID_VALUES.setdefault(_pid, 0)
+for _pid in (0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x5A):
+    DEFAULT_MODE01_PID_VALUES.setdefault(_pid, THROTTLE_PERCENT)
 
 
 @dataclass
@@ -157,30 +297,58 @@ GUID_DEVINTERFACE_USB_DEVICE = GUID(
 
 
 class WinUsbBackend:
-    INIT_PACKET_CH1_A = bytes.fromhex(
+    INIT_PACKET_500K_CH1_A = bytes.fromhex(
         "01 00 00 00 00 00 00 00 ff ff ff ff 00 00 00 00 "
         "00 00 00 00 00 00 00 00 00 00 00 00 1c 00 00 00"
     )
-    INIT_PACKET_CH1_B = bytes.fromhex(
-        "02 00 00 00 03 02 00 00 9e 4d c8 28 03 02 00 00 "
-        "f0 94 c0 4a 03 02 00 00 30 03 aa 4a 03 02 00 00"
+    INIT_PACKET_500K_CH1_B = bytes.fromhex(
+        "02 00 00 00 2a 02 00 00 9e 4d 35 6d 2a 02 00 00 "
+        "d0 b1 aa 11 2a 02 00 00 30 cf 1f 0f 2a 02 00 00"
     )
-    INIT_PACKET_CH2_A = INIT_PACKET_CH1_A
-    INIT_PACKET_CH2_B = bytes.fromhex(
-        "02 00 00 00 00 00 00 00 00 00 00 00 1c 00 00 00 "
-        "00 00 00 00 01 00 00 00 30 03 aa 4a 03 02 00 00"
+    INIT_PACKET_250K_CH1_A = bytes.fromhex(
+        "01 00 00 00 00 00 00 00 ff ff ff ff 00 00 00 00 "
+        "00 00 00 00 00 00 00 00 01 00 00 00 1c 00 00 00"
     )
+    INIT_PACKET_250K_CH1_B = bytes.fromhex(
+        "02 00 00 00 2a 02 00 00 9e 4d 35 6d 2a 02 00 00 "
+        "a0 b7 f3 1a 2a 02 00 00 30 cf 1f 0f 2a 02 00 00"
+    )
+    BITRATE_INIT_PROFILES = {
+        500000: (
+            INIT_PACKET_500K_CH1_A,
+            INIT_PACKET_500K_CH1_B,
+            None,
+            None,
+        ),
+        250000: (
+            INIT_PACKET_250K_CH1_A,
+            INIT_PACKET_250K_CH1_B,
+            None,
+            None,
+        ),
+    }
 
-    def __init__(self, vid: int, pid: int, channel_index: int = 0, bitrate: int = 500000):
+    def __init__(
+        self,
+        vid: int,
+        pid: int,
+        channel_index: int = 0,
+        bitrate: int = 500000,
+        tx_mid: bytes = USB_CAN_TX_MID,
+        tx_trailer: bytes = USB_CAN_TX_TRAILER,
+    ):
         self.vid = vid
         self.pid = pid
         self.channel_index = channel_index
         self.bitrate = bitrate
+        self.tx_mid = tx_mid
+        self.tx_trailer = tx_trailer
         self.device_handle = None
         self.winusb_handle = ctypes.c_void_p()
         self.pipes: dict[int, WINUSB_PIPE_INFORMATION] = {}
         self.is_open = False
         self.last_rx_key = None
+        self.startup_discarded_packets = 0
 
         self.setupapi = ctypes.WinDLL("setupapi", use_last_error=True)
         self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
@@ -196,10 +364,15 @@ class WinUsbBackend:
             self._raise_last_error("WinUsb_Initialize失败")
         self._query_pipes()
         self._set_pipe_timeouts(100)
+        self._flush_usb_pipes()
         self._initialize_can_box()
+        self.startup_discarded_packets = self._drain_data_in_pipe()
+        self.last_rx_key = None
         self.is_open = True
 
     def close(self):
+        if self.winusb_handle:
+            self._flush_usb_pipes()
         if self.winusb_handle:
             self.winusb.WinUsb_Free(self.winusb_handle)
             self.winusb_handle = ctypes.c_void_p()
@@ -210,7 +383,7 @@ class WinUsbBackend:
 
     def send(self, msg: CanMessage):
         pipe_id = self._data_out_pipe()
-        self._write_pipe(pipe_id, self._encode_can_packet(msg))
+        self._write_pipe(pipe_id, self._encode_can_packet(msg, self.tx_mid, self.tx_trailer))
 
     def receive(self, timeout_ms: int = 100, max_messages: int = 50) -> list[CanMessage]:
         self._set_pipe_timeout(self._data_in_pipe(), timeout_ms)
@@ -312,6 +485,10 @@ class WinUsbBackend:
             ctypes.c_void_p,
         ]
         self.winusb.WinUsb_SetPipePolicy.restype = wintypes.BOOL
+        self.winusb.WinUsb_AbortPipe.argtypes = [ctypes.c_void_p, ctypes.c_ubyte]
+        self.winusb.WinUsb_AbortPipe.restype = wintypes.BOOL
+        self.winusb.WinUsb_FlushPipe.argtypes = [ctypes.c_void_p, ctypes.c_ubyte]
+        self.winusb.WinUsb_FlushPipe.restype = wintypes.BOOL
 
     def _find_device_path(self) -> str:
         digcf_present = 0x00000002
@@ -414,17 +591,50 @@ class WinUsbBackend:
             ctypes.byref(value),
         )
 
+    def _flush_usb_pipes(self):
+        for pipe_id in list(self.pipes):
+            self.winusb.WinUsb_AbortPipe(self.winusb_handle, pipe_id)
+            self.winusb.WinUsb_FlushPipe(self.winusb_handle, pipe_id)
+
+    def _drain_data_in_pipe(self, duration_ms: int = 250, max_packets: int = 200) -> int:
+        pipe_id = self._data_in_pipe()
+        old_timeout_ms = 100
+        deadline = time.time() + duration_ms / 1000
+        discarded = 0
+        self._set_pipe_timeout(pipe_id, 5)
+        try:
+            while discarded < max_packets and time.time() < deadline:
+                packet = self._read_pipe(pipe_id, 32, ignore_errors=True)
+                if not packet:
+                    break
+                discarded += 1
+        finally:
+            self._set_pipe_timeout(pipe_id, old_timeout_ms)
+        return discarded
+
     def _initialize_can_box(self):
+        ch1_a, ch1_b, ch2_a, ch2_b = self._init_packets_for_bitrate()
+        if self.channel_index != 0:
+            raise RuntimeError("当前只验证了 CAN1/channelIndex=0 的WinUSB初始化流程")
         handshake = bytes([0x13, 0x00, 0x00, 0x00]) + os.urandom(28)
         self._write_pipe(0x02, handshake)
         if 0x82 in self.pipes:
             self._read_pipe(0x82, 32, ignore_errors=True)
 
-        self._write_pipe(0x02, self.INIT_PACKET_CH1_A)
-        self._write_pipe(0x02, self.INIT_PACKET_CH1_B)
-        if 0x04 in self.pipes:
-            self._write_pipe(0x04, self.INIT_PACKET_CH2_A)
-            self._write_pipe(0x04, self.INIT_PACKET_CH2_B)
+        self._write_pipe(0x02, ch1_a)
+        self._write_pipe(0x02, ch1_b)
+        if 0x04 in self.pipes and ch2_a and ch2_b:
+            self._write_pipe(0x04, ch2_a)
+            self._write_pipe(0x04, ch2_b)
+
+    def _init_packets_for_bitrate(self) -> tuple[bytes, bytes, bytes | None, bytes | None]:
+        profile = self.BITRATE_INIT_PROFILES.get(self.bitrate)
+        if profile is None:
+            raise RuntimeError(
+                f"当前还没有 {self.bitrate}bps 的已验证CAN盒初始化包。"
+                "请用正常工具选择该波特率打开CAN，并提供Bus Hound打开阶段日志。"
+            )
+        return profile
 
     def _data_in_pipe(self) -> int:
         return 0x81 if self.channel_index == 0 else 0x83
@@ -466,7 +676,11 @@ class WinUsbBackend:
             self._raise_last_error(f"WinUsb_WritePipe失败 pipe=0x{pipe_id:02X}")
 
     @staticmethod
-    def _encode_can_packet(msg: CanMessage) -> bytes:
+    def _encode_can_packet(
+        msg: CanMessage,
+        tx_mid: bytes = USB_CAN_TX_MID,
+        tx_trailer: bytes = USB_CAN_TX_TRAILER,
+    ) -> bytes:
         packet = bytearray(32)
         packet[0] = 0x01
         packet[1:5] = int(msg.arbitration_id).to_bytes(4, "little")
@@ -474,6 +688,8 @@ class WinUsbBackend:
         packet[12] = 0x01 if msg.is_extended_id else 0x00
         packet[13] = min(len(msg.data), 8)
         packet[14 : 14 + packet[13]] = bytes(pad8(msg.data)[: packet[13]])
+        packet[24:28] = tx_mid
+        packet[28:32] = tx_trailer
         return bytes(packet)
 
     @staticmethod
@@ -481,9 +697,11 @@ class WinUsbBackend:
         if len(packet) < 22 or all(byte == 0 for byte in packet):
             return None
         can_id = int.from_bytes(packet[1:5], "little")
-        if can_id == 0:
+        if can_id == 0 or can_id in CAN_BOX_STATUS_IDS:
             return None
         dlc = max(0, min(8, packet[13]))
+        if dlc == 0:
+            return None
         return CanMessage(
             arbitration_id=can_id,
             data=list(packet[14 : 14 + dlc]),
@@ -497,10 +715,11 @@ class WinUsbBackend:
 
 
 class MockBackend:
-    def __init__(self):
+    def __init__(self, id_format: str = "11bit"):
         self.is_open = False
         self.rx_queue = queue.Queue()
         self.thread = None
+        self.id_format = id_format
 
     def open(self):
         self.is_open = True
@@ -533,17 +752,28 @@ class MockBackend:
             [0x02, 0x09, 0x02, 0, 0, 0, 0, 0],
             [0x30, 0x00, 0x00, 0, 0, 0, 0, 0],
         ]
+        request_id = 0x18DB33F1 if self.id_format == "29bit" else FUNCTIONAL_REQUEST_ID
         index = 0
         while self.is_open:
-            self.rx_queue.put(CanMessage(FUNCTIONAL_REQUEST_ID, requests[index]))
+            self.rx_queue.put(CanMessage(request_id, requests[index], is_extended_id=(self.id_format == "29bit")))
             index = (index + 1) % len(requests)
             time.sleep(1.0)
 
 
 class ObdIsoTpResponder:
-    def __init__(self, value_provider, vin: str):
+    def __init__(
+        self,
+        value_provider,
+        vin: str,
+        id_format: str = "11bit",
+        respond_extended_29bit: bool | None = None,
+    ):
         self.value_provider = value_provider
         self.vin = vin[:17].ljust(17, "0")
+        self.id_format = self._normalize_id_format(id_format)
+        self.respond_extended_29bit = (
+            RESPOND_EXTENDED_29BIT if respond_extended_29bit is None else bool(respond_extended_29bit)
+        )
         self.pending_by_fc_id: dict[tuple[int, bool], PendingIsoTp] = {}
 
     def handle(self, msg: CanMessage) -> list[TxItem]:
@@ -562,16 +792,16 @@ class ObdIsoTpResponder:
             return []
 
         payload_len = data[0] & 0x0F
-        if payload_len < 2 or payload_len > 7:
+        if payload_len < 1 or payload_len > 7:
             return []
 
         payload = data[1 : 1 + payload_len]
         service = payload[0]
-        pid = payload[1]
+        pid = payload[1] if len(payload) >= 2 else None
 
-        response_payload = self._build_obd_payload(service, pid)
+        response_payload = self._build_obd_payload(service, pid, payload[1:])
         if response_payload is None:
-            response_payload = [0x7F, service, 0x12]  # sub-function not supported
+            return []
 
         return self._make_isotp_response(response_id, flow_control_id, msg.is_extended_id, response_payload)
 
@@ -603,83 +833,66 @@ class ObdIsoTpResponder:
 
     def _response_address(self, msg: CanMessage):
         can_id = msg.arbitration_id
-        if not msg.is_extended_id:
+        if self.id_format == "11bit":
+            if msg.is_extended_id:
+                return None, None
             if can_id == FUNCTIONAL_REQUEST_ID:
                 return ECU_RESPONSE_ID, PHYSICAL_REQUEST_BASE
             if PHYSICAL_REQUEST_BASE <= can_id <= PHYSICAL_REQUEST_END:
                 return ECU_RESPONSE_ID + (can_id - PHYSICAL_REQUEST_BASE), can_id
             return None, None
 
-        # 默认只模拟 J1979 11bit。需要29bit时再打开 RESPOND_EXTENDED_29BIT。
-        if RESPOND_EXTENDED_29BIT and can_id in (0x18DB33F1, 0x18DA10F1):
-            return 0x18DAF110, 0x18DA10F1
+        if not msg.is_extended_id or not self.respond_extended_29bit:
+            return None, None
+
+        if (can_id & 0x1FFFFF00) == EXT_FUNCTIONAL_REQUEST_BASE:
+            tester_addr = can_id & 0xFF
+            response_id = EXT_PHYSICAL_REQUEST_BASE | (tester_addr << 8) | EXT_OBD_ECU_ADDR
+            flow_control_id = EXT_PHYSICAL_REQUEST_BASE | (EXT_OBD_ECU_ADDR << 8) | tester_addr
+            return response_id, flow_control_id
+
+        if (can_id & 0x1FFF0000) == EXT_PHYSICAL_REQUEST_BASE:
+            target_addr = (can_id >> 8) & 0xFF
+            source_addr = can_id & 0xFF
+            response_id = EXT_PHYSICAL_REQUEST_BASE | (source_addr << 8) | target_addr
+            return response_id, can_id
         return None, None
 
-    def _build_obd_payload(self, service: int, pid: int) -> list[int] | None:
+    @staticmethod
+    def _normalize_id_format(value: str) -> str:
+        text = str(value).strip().lower().replace("-", "")
+        if text in ("11", "11bit", "standard", "std"):
+            return "11bit"
+        if text in ("29", "29bit", "extended", "ext"):
+            return "29bit"
+        raise ValueError("ID格式必须是 11bit 或 29bit")
+
+    def _build_obd_payload(self, service: int, pid: int | None, params: list[int] | None = None) -> list[int] | None:
         speed, rpm = self.value_provider()
+        params = params or []
 
         if service == 0x01:
-            if pid in (0x00, 0x20, 0x40):
+            if pid is None:
+                return None
+            if pid in SUPPORTED_MODE01_MASK_PIDS:
                 return [0x41, pid] + self._supported_pid_mask(pid)
-            if pid == 0x01:
-                return [0x41, 0x01, 0x00, 0x00, 0x00, 0x00]
-            if pid == 0x04:
-                return [0x41, 0x04, self._percent_byte(CALCULATED_LOAD_PERCENT)]
-            if pid == 0x05:
-                return [0x41, 0x05, self._temperature_byte(COOLANT_TEMP_C)]
-            if pid == 0x06:
-                return [0x41, 0x06, self._fuel_trim_byte(SHORT_FUEL_TRIM_BANK1_PERCENT)]
-            if pid == 0x07:
-                return [0x41, 0x07, self._fuel_trim_byte(LONG_FUEL_TRIM_BANK1_PERCENT)]
-            if pid == 0x08:
-                return [0x41, 0x08, self._fuel_trim_byte(SHORT_FUEL_TRIM_BANK2_PERCENT)]
-            if pid == 0x09:
-                return [0x41, 0x09, self._fuel_trim_byte(LONG_FUEL_TRIM_BANK2_PERCENT)]
-            if pid == 0x0B:
-                return [0x41, 0x0B, self._u8(INTAKE_PRESSURE_KPA)]
-            if pid == 0x0C:
-                rpm_raw = max(0, min(0xFFFF, int(rpm * 4)))
-                return [0x41, 0x0C, (rpm_raw >> 8) & 0xFF, rpm_raw & 0xFF]
-            if pid == 0x0D:
-                return [0x41, 0x0D, max(0, min(255, int(round(speed))))]
-            if pid == 0x0F:
-                return [0x41, 0x0F, self._temperature_byte(INTAKE_AIR_TEMP_C)]
-            if pid == 0x10:
-                maf_raw = self._u16(round(MAF_GPS * 100))
-                return [0x41, 0x10, (maf_raw >> 8) & 0xFF, maf_raw & 0xFF]
-            if pid == 0x11:
-                return [0x41, 0x11, self._percent_byte(THROTTLE_PERCENT)]
-            if 0x14 <= pid <= 0x1B:
-                voltage = self._u8(O2_SENSOR_VOLTAGE_V * 200)
-                trim = self._fuel_trim_byte(0)
-                return [0x41, pid, voltage, trim]
-            if pid == 0x1C:
-                return [0x41, 0x1C, 0x06]
-            if pid == 0x1F:
-                value = self._u16(RUN_TIME_SEC)
-                return [0x41, 0x1F, (value >> 8) & 0xFF, value & 0xFF]
-            if pid == 0x21:
-                value = self._u16(MIL_DISTANCE_KM)
-                return [0x41, 0x21, (value >> 8) & 0xFF, value & 0xFF]
-            if pid == 0x2F:
-                return [0x41, 0x2F, self._percent_byte(FUEL_LEVEL_PERCENT)]
-            if pid == 0x31:
-                value = self._u16(CLEAR_DISTANCE_KM)
-                return [0x41, 0x31, (value >> 8) & 0xFF, value & 0xFF]
-            if pid == 0x43:
-                value = self._u16(round(ABSOLUTE_LOAD_PERCENT * 255 / 100))
-                return [0x41, 0x43, (value >> 8) & 0xFF, value & 0xFF]
-            if pid == 0x51:
-                return [0x41, 0x51, self._u8(FUEL_TYPE)]
-            if pid == 0x5B:
-                return [0x41, 0x5B, self._percent_byte(HYBRID_SOC_PERCENT)]
-            if pid == 0x5C:
-                return [0x41, 0x5C, self._temperature_byte(OIL_TEMP_C)]
-            if pid == 0x5E:
-                value = self._u16(round(FUEL_RATE_LPH / 0.05))
-                return [0x41, 0x5E, (value >> 8) & 0xFF, value & 0xFF]
+            return self._mode01_payload(pid, speed, rpm)
+
+        if service == 0x03:
+            return [0x43, 0x00]
+
+        if service == 0x07:
+            return [0x47, 0x00]
+
+        if service == 0x0A:
+            return [0x4A, 0x00]
+
+        if service == 0x10 and params:
+            return [0x50, params[0], 0x00, 0x32, 0x01, 0xF4]
 
         if service == 0x09:
+            if pid is None:
+                return None
             if pid == 0x00:
                 # 支持 09 02 VIN
                 return [0x49, 0x00, 0x40, 0x00, 0x00, 0x00]
@@ -687,6 +900,119 @@ class ObdIsoTpResponder:
                 return [0x49, 0x02, 0x01] + list(self.vin.encode("ascii", errors="replace"))
 
         return None
+
+    def _mode01_payload(self, pid: int, speed: float, rpm: int) -> list[int] | None:
+        if pid not in SUPPORTED_MODE01_PIDS:
+            return None
+
+        if pid == 0x01:
+            return [0x41, 0x01, 0x00, 0x00, 0x00, 0x00]
+        if pid == 0x02:
+            return [0x41, 0x02, 0x00, self._u8(self._pid_value(0x02, 0))]
+        if pid == 0x03:
+            return [0x41, 0x03, self._u8(self._pid_value(0x03, 2)), 0x00]
+        if pid == 0x04:
+            return [0x41, pid, self._percent_byte(self._pid_value(pid, CALCULATED_LOAD_PERCENT))]
+        if pid == 0x05:
+            return [0x41, pid, self._temperature_byte(self._pid_value(pid, COOLANT_TEMP_C))]
+        if 0x06 <= pid <= 0x09:
+            return [0x41, pid, self._fuel_trim_byte(self._pid_value(pid, DEFAULT_MODE01_PID_VALUES[pid]))]
+        if pid == 0x0A:
+            return [0x41, pid, self._u8(self._pid_value(pid, FUEL_PRESSURE_KPA) / 3)]
+        if pid == 0x0B:
+            return [0x41, pid, self._u8(self._pid_value(pid, INTAKE_PRESSURE_KPA))]
+        if pid == 0x0C:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, rpm) * 4)
+        if pid == 0x0D:
+            return [0x41, pid, self._u8(self._pid_value(pid, speed))]
+        if pid == 0x0E:
+            return [0x41, pid, self._u8((self._pid_value(pid, 0) + 64) * 2)]
+        if pid == 0x0F:
+            return [0x41, pid, self._temperature_byte(self._pid_value(pid, INTAKE_AIR_TEMP_C))]
+        if pid == 0x10:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, MAF_GPS) * 100)
+        if pid == 0x11:
+            return [0x41, pid, self._percent_byte(self._pid_value(pid, THROTTLE_PERCENT))]
+        if pid == 0x12:
+            return [0x41, pid, self._u8(self._pid_value(pid, 1))]
+        if pid == 0x13:
+            return [0x41, pid, self._u8(self._pid_value(pid, 0x03))]
+        if 0x14 <= pid <= 0x1B:
+            return [0x41, pid, self._u8(self._pid_value(pid, O2_SENSOR_VOLTAGE_V) * 200), self._fuel_trim_byte(0)]
+        if pid == 0x1C:
+            return [0x41, pid, self._u8(self._pid_value(pid, 6))]
+        if pid == 0x1D:
+            return [0x41, pid, self._u8(self._pid_value(pid, 0x03))]
+        if pid == 0x1E:
+            return [0x41, pid, self._u8(self._pid_value(pid, 0))]
+        if pid in (0x1F, 0x21, 0x31, 0x4D, 0x4E):
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, DEFAULT_MODE01_PID_VALUES.get(pid, 0)))
+        if pid == 0x22:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, FUEL_RAIL_PRESSURE_KPA) / 0.079)
+        if pid in (0x23, 0x59):
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, FUEL_RAIL_PRESSURE_KPA) / 10)
+        if 0x24 <= pid <= 0x2B:
+            return [0x41, pid] + self._lambda_voltage_bytes(self._pid_value(pid, COMMANDED_EQUIV_RATIO), O2_SENSOR_VOLTAGE_V)
+        if pid in (0x2C, 0x2E, 0x2F, 0x45, 0x47, 0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x52, 0x5A, 0x5B):
+            return [0x41, pid, self._percent_byte(self._pid_value(pid, DEFAULT_MODE01_PID_VALUES.get(pid, 0)))]
+        if pid in (0x2D, 0x55, 0x56, 0x57, 0x58):
+            return [0x41, pid, self._fuel_trim_byte(self._pid_value(pid, 0))]
+        if pid == 0x30:
+            return [0x41, pid, self._u8(self._pid_value(pid, 1))]
+        if pid == 0x32:
+            return [0x41, pid] + self._i16_bytes(self._pid_value(pid, EVAP_PRESSURE_PA) * 4)
+        if pid == 0x33:
+            return [0x41, pid, self._u8(self._pid_value(pid, BAROMETRIC_PRESSURE_KPA))]
+        if 0x34 <= pid <= 0x3B:
+            return [0x41, pid] + self._lambda_current_bytes(self._pid_value(pid, COMMANDED_EQUIV_RATIO), 0)
+        if 0x3C <= pid <= 0x3F:
+            return [0x41, pid] + self._u16_bytes((self._pid_value(pid, CATALYST_TEMP_C) + 40) * 10)
+        if pid == 0x41:
+            return [0x41, pid, 0x00, 0x00, 0x00, 0x00]
+        if pid == 0x42:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, CONTROL_MODULE_VOLTAGE_V) * 1000)
+        if pid == 0x43:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, ABSOLUTE_LOAD_PERCENT) * 255 / 100)
+        if pid == 0x44:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, COMMANDED_EQUIV_RATIO) * 65536 / 2)
+        if pid in (0x46, 0x5C):
+            return [0x41, pid, self._temperature_byte(self._pid_value(pid, DEFAULT_MODE01_PID_VALUES.get(pid, 0)))]
+        if pid == 0x4F:
+            return [0x41, pid, 0xFF, 0xFF, 0xFF, 0xFF]
+        if pid == 0x50:
+            return [0x41, pid, self._u8(self._pid_value(pid, MAX_AIR_FLOW_GPS) / 10)]
+        if pid == 0x51:
+            return [0x41, pid, self._u8(self._pid_value(pid, FUEL_TYPE))]
+        if pid == 0x53:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, ABSOLUTE_EVAP_PRESSURE_KPA) * 200)
+        if pid == 0x54:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, EVAP_PRESSURE_PA) + 32767)
+        if pid == 0x5D:
+            return [0x41, pid] + self._u16_bytes((self._pid_value(pid, 0) + 210) * 128)
+        if pid == 0x5E:
+            return [0x41, pid] + self._u16_bytes(self._pid_value(pid, FUEL_RATE_LPH) / 0.05)
+        if pid == 0x5F:
+            return [0x41, pid, self._u8(self._pid_value(pid, 0))]
+        if pid == 0x62:
+            return [0x41, pid, self._u8(self._pid_value(pid, 0) + 125)]
+        if pid == 0x66:
+            maf_raw = self._u16(self._pid_value(0x10, MAF_GPS) * 32)
+            return [0x41, pid, 0x03, (maf_raw >> 8) & 0xFF, maf_raw & 0xFF, (maf_raw >> 8) & 0xFF, maf_raw & 0xFF]
+        if pid == 0x9A:
+            value = self._u32(round(float(self._signal_value("battery_pack_voltage", BATTERY_VOLTAGE_V)) * 100))
+            return [0x41, pid] + self._u32_bytes(value)
+        if pid == 0xA6:
+            value = self._u32(round(float(self._pid_value(pid, ODO_KM)) * 10))
+            return [0x41, pid] + self._u32_bytes(value)
+        if pid == 0xB2:
+            return [0x41, pid, self._percent_byte(self._pid_value(pid, BATTERY_SOH_PERCENT))]
+        if pid == 0xB7:
+            current_raw = self._u16((float(self._signal_value("battery_pack_current", BATTERY_CURRENT_A)) + 3276.8) * 10)
+            voltage_raw = self._u16(float(self._signal_value("battery_pack_voltage", BATTERY_VOLTAGE_V)) * 10)
+            temp_raw = self._temperature_byte(self._signal_value("battery_pack_temperature", self._pid_value(pid, BATTERY_TEMP_C)))
+            return [0x41, pid, (current_raw >> 8) & 0xFF, current_raw & 0xFF, (voltage_raw >> 8) & 0xFF, voltage_raw & 0xFF, temp_raw]
+
+        return [0x41, pid, 0x00]
 
     @staticmethod
     def _supported_pid_mask(start_pid: int) -> list[int]:
@@ -703,6 +1029,45 @@ class ObdIsoTpResponder:
     @staticmethod
     def _u16(value: float | int) -> int:
         return max(0, min(0xFFFF, int(round(value))))
+
+    @staticmethod
+    def _u32(value: float | int) -> int:
+        return max(0, min(0xFFFFFFFF, int(round(value))))
+
+    @staticmethod
+    def _u32_bytes(value: int) -> list[int]:
+        return [(value >> 24) & 0xFF, (value >> 16) & 0xFF, (value >> 8) & 0xFF, value & 0xFF]
+
+    @classmethod
+    def _u16_bytes(cls, value: float | int) -> list[int]:
+        raw = cls._u16(value)
+        return [(raw >> 8) & 0xFF, raw & 0xFF]
+
+    @classmethod
+    def _i16_bytes(cls, value: float | int) -> list[int]:
+        raw = int(round(value))
+        raw = max(-32768, min(32767, raw)) & 0xFFFF
+        return [(raw >> 8) & 0xFF, raw & 0xFF]
+
+    @classmethod
+    def _lambda_voltage_bytes(cls, ratio: float | int, voltage: float | int) -> list[int]:
+        ratio_raw = cls._u16(float(ratio) * 32768)
+        voltage_raw = cls._u16(float(voltage) * 8192)
+        return [(ratio_raw >> 8) & 0xFF, ratio_raw & 0xFF, (voltage_raw >> 8) & 0xFF, voltage_raw & 0xFF]
+
+    @classmethod
+    def _lambda_current_bytes(cls, ratio: float | int, current_ma: float | int) -> list[int]:
+        ratio_raw = cls._u16(float(ratio) * 32768)
+        current_raw = cls._u16((float(current_ma) + 128) * 256)
+        return [(ratio_raw >> 8) & 0xFF, ratio_raw & 0xFF, (current_raw >> 8) & 0xFF, current_raw & 0xFF]
+
+    @staticmethod
+    def _pid_value(pid: int, default: float | int) -> float | int:
+        return default
+
+    @staticmethod
+    def _signal_value(signal: str, default: float | int) -> float | int:
+        return default
 
     @classmethod
     def _temperature_byte(cls, celsius: float | int) -> int:
@@ -756,23 +1121,39 @@ class CanSimGUI:
         self.sim_thread = None
         self.recv_thread = None
         self.backend = None
+        self.active_id_format = CAN_ID_FORMAT
+        self.active_bitrate = CAN_BITRATE
+        self.sim_profile = self._sim_profile(CAN_ID_FORMAT, CAN_BITRATE)
 
-        self.cur_speed = DEFAULT_SPEED
-        self.cur_rpm = DEFAULT_RPM
+        self.cur_speed = self.sim_profile["speed_start"]
+        self.cur_rpm = self.sim_profile["rpm_start"]
         self.speed_mode = "rise"
         self.value_lock = threading.Lock()
         self.last_rx_log_key = None
         self.last_rx_log_time = 0.0
         self.suppressed_rx_count = 0
+        self.last_answer_time_by_request: dict[tuple[int, bool, tuple[int, ...]], float] = {}
+        self.suppressed_tx_count = 0
 
         self.backend_var = tk.StringVar(value=CAN_BACKEND)
         self.vid_var = tk.StringVar(value=f"0x{WINUSB_VID:04X}")
         self.pid_var = tk.StringVar(value=f"0x{WINUSB_PID:04X}")
         self.channel_index_var = tk.StringVar(value=str(CAN_CHANNEL_INDEX))
         self.bitrate_var = tk.StringVar(value=str(CAN_BITRATE))
+        self.id_format_var = tk.StringVar(value=CAN_ID_FORMAT)
+        self.sim_status_var = tk.StringVar(value="状态：未打开 CAN")
 
-        self.responder = ObdIsoTpResponder(self.get_values, VIN)
+        self.responder = ObdIsoTpResponder(
+            self.get_values,
+            VIN,
+            id_format=self.id_format_var.get(),
+            respond_extended_29bit=(self.id_format_var.get() == "29bit"),
+        )
         self.build_ui()
+
+    @staticmethod
+    def _sim_profile(id_format: str, bitrate: int) -> dict:
+        return SIM_PROFILES.get((id_format, bitrate), SIM_PROFILES[(CAN_ID_FORMAT, CAN_BITRATE)])
 
     def build_ui(self):
         frame_top = ttk.Frame(self.root, padding=6)
@@ -781,22 +1162,25 @@ class CanSimGUI:
         self.btn_open.grid(row=0, column=0, padx=4)
         self.btn_close = ttk.Button(frame_top, text="关闭CAN盒", command=self.close_can, state="disabled")
         self.btn_close.grid(row=0, column=1, padx=4)
-        self.btn_start = ttk.Button(frame_top, text="启动动态数据", command=self.start_sim, state="disabled")
+        self.btn_start = ttk.Button(frame_top, text="启动仿真应答", command=self.start_sim, state="disabled")
         self.btn_start.grid(row=0, column=2, padx=4)
         self.btn_stop = ttk.Button(frame_top, text="停止数据仿真", command=self.stop_sim, state="disabled")
         self.btn_stop.grid(row=0, column=3, padx=4)
+        self.label_sim_status = ttk.Label(frame_top, textvariable=self.sim_status_var, foreground="#666666")
+        self.label_sim_status.grid(row=0, column=4, sticky="w", padx=(12, 4))
+        frame_top.columnconfigure(4, weight=1)
 
         frame_cfg = ttk.LabelFrame(self.root, text="CAN盒配置", padding=6)
         frame_cfg.pack(fill="x", padx=6, pady=4)
         ttk.Label(frame_cfg, text="后端:").grid(row=0, column=0, sticky="w")
-        backend_box = ttk.Combobox(
+        self.backend_box = ttk.Combobox(
             frame_cfg,
             textvariable=self.backend_var,
             values=("winusb", "mock"),
             width=12,
             state="readonly",
         )
-        backend_box.grid(row=0, column=1, sticky="w", padx=(4, 12))
+        self.backend_box.grid(row=0, column=1, sticky="w", padx=(4, 12))
 
         ttk.Label(frame_cfg, text="VID:").grid(row=0, column=2, sticky="w")
         ttk.Entry(frame_cfg, textvariable=self.vid_var, width=10).grid(row=0, column=3, sticky="w", padx=4)
@@ -806,17 +1190,39 @@ class CanSimGUI:
         ttk.Label(frame_cfg, text="channelIndex:").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(frame_cfg, textvariable=self.channel_index_var, width=8).grid(row=1, column=1, sticky="w", padx=(4, 12), pady=(6, 0))
         ttk.Label(frame_cfg, text="bitrate:").grid(row=1, column=2, sticky="w", pady=(6, 0))
-        ttk.Entry(frame_cfg, textvariable=self.bitrate_var, width=9).grid(row=1, column=3, sticky="w", padx=4, pady=(6, 0))
-        ttk.Label(frame_cfg, text=f"应答模式：OBD设备请求 -> CAN盒应答，VIN={VIN}").grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
+        self.bitrate_box = ttk.Combobox(
+            frame_cfg,
+            textvariable=self.bitrate_var,
+            values=("250000", "500000"),
+            width=9,
+            state="readonly",
+        )
+        self.bitrate_box.grid(row=1, column=3, sticky="w", padx=4, pady=(6, 0))
+        ttk.Label(frame_cfg, text="ID格式:").grid(row=1, column=4, sticky="w", padx=(8, 0), pady=(6, 0))
+        self.id_format_box = ttk.Combobox(
+            frame_cfg,
+            textvariable=self.id_format_var,
+            values=("11bit", "29bit"),
+            width=8,
+            state="readonly",
+        )
+        self.id_format_box.grid(row=1, column=5, sticky="w", padx=4, pady=(6, 0))
+        ttk.Label(
+            frame_cfg,
+            text=(
+                f"打开后先监听；点击“启动仿真应答”后才应答OBD请求；"
+                f"11bit/29bit 已分开；250K/500K 初始化已按Bus Hound日志分开；VIN={VIN}"
+            ),
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(6, 0))
         frame_cfg.columnconfigure(3, weight=1)
 
         frame_data = ttk.LabelFrame(self.root, text="实时仿真值", padding=6)
         frame_data.pack(fill="x", padx=6, pady=4)
         ttk.Label(frame_data, text="车速(km/h):").grid(row=0, column=0, sticky="w")
-        self.label_spd = ttk.Label(frame_data, text=f"{DEFAULT_SPEED:.1f}", font=("", 12, "bold"), foreground="#0055cc")
+        self.label_spd = ttk.Label(frame_data, text=f"{self.cur_speed:.1f}", font=("", 12, "bold"), foreground="#0055cc")
         self.label_spd.grid(row=0, column=1, padx=10)
         ttk.Label(frame_data, text="转速(rpm):").grid(row=0, column=2, sticky="w", padx=(20, 0))
-        self.label_rpm = ttk.Label(frame_data, text=str(DEFAULT_RPM), font=("", 12, "bold"), foreground="#cc2200")
+        self.label_rpm = ttk.Label(frame_data, text=str(self.cur_rpm), font=("", 12, "bold"), foreground="#cc2200")
         self.label_rpm.grid(row=0, column=3, padx=10)
 
         frame_log = ttk.LabelFrame(self.root, text="总线日志", padding=6)
@@ -832,6 +1238,12 @@ class CanSimGUI:
         self.log_box.insert(tk.END, f"[{timestamp}] {msg}\n")
         self.log_box.see(tk.END)
 
+    def set_config_widgets_state(self, state: str):
+        for widget_name in ("backend_box", "bitrate_box", "id_format_box"):
+            widget = getattr(self, widget_name, None)
+            if widget is not None:
+                widget.config(state=state)
+
     def should_log_rx(self, msg: CanMessage) -> bool:
         key = (msg.arbitration_id, tuple(msg.data), msg.is_extended_id)
         now = time.time()
@@ -845,9 +1257,89 @@ class CanSimGUI:
         self.last_rx_log_time = now
         return True
 
+    def should_answer_request(self, msg: CanMessage) -> bool:
+        data = pad8(msg.data)
+        pci_type = data[0] & 0xF0
+        if pci_type == 0x30:
+            return True
+        if pci_type != 0x00:
+            return True
+
+        payload_len = data[0] & 0x0F
+        key = (msg.arbitration_id, msg.is_extended_id, tuple(data[: 1 + payload_len]))
+        now = time.time()
+        last_time = self.last_answer_time_by_request.get(key)
+        if last_time is not None and now - last_time < DUPLICATE_REQUEST_TX_GAP_SEC:
+            self.suppressed_tx_count += 1
+            return False
+
+        if self.suppressed_tx_count:
+            self.log_print(f"[TX] 重复请求应答已限速 {self.suppressed_tx_count} 次")
+            self.suppressed_tx_count = 0
+        self.last_answer_time_by_request[key] = now
+        return True
+
+    def is_speed_request(self, msg: CanMessage) -> bool:
+        data = pad8(msg.data)
+        payload_len = data[0] & 0x0F
+        return (data[0] & 0xF0) == 0x00 and payload_len >= 2 and data[1] == 0x01 and data[2] == 0x0D
+
+    def is_obd_value_request(self, msg: CanMessage) -> bool:
+        data = pad8(msg.data)
+        payload_len = data[0] & 0x0F
+        return (
+            (data[0] & 0xF0) == 0x00
+            and payload_len >= 2
+            and data[1] == 0x01
+            and data[2] in (0x0C, 0x0D)
+        )
+
+    def is_speed_response(self, msg: CanMessage) -> bool:
+        data = pad8(msg.data)
+        payload_len = data[0] & 0x0F
+        return (data[0] & 0xF0) == 0x00 and payload_len == 3 and data[1] == 0x41 and data[2] == 0x0D
+
+    def matches_selected_id_format(self, msg: CanMessage) -> bool:
+        return msg.is_extended_id if self.active_id_format == "29bit" else not msg.is_extended_id
+
+    @staticmethod
+    def actual_id_format(msg: CanMessage) -> str:
+        return "29bit" if msg.is_extended_id else "11bit"
+
     def get_values(self):
         with self.value_lock:
             return self.cur_speed, self.cur_rpm
+
+    def reset_values_for_profile(self):
+        with self.value_lock:
+            self.cur_speed = float(self.sim_profile["speed_start"])
+            self.cur_rpm = int(self.sim_profile["rpm_start"])
+            speed_text = f"{self.cur_speed:.1f}"
+            rpm_text = str(self.cur_rpm)
+        self.root.after(0, self.label_spd.config, {"text": speed_text})
+        self.root.after(0, self.label_rpm.config, {"text": rpm_text})
+
+    def advance_value_after_response(self, msg: CanMessage):
+        data = pad8(msg.data)
+        payload_len = data[0] & 0x0F
+        if (data[0] & 0xF0) != 0x00 or payload_len < 3 or data[1] != 0x41:
+            return
+
+        with self.value_lock:
+            if data[2] == 0x0D:
+                self.cur_speed += SPEED_STEP_KMH
+                if self.cur_speed > SPEED_RISE_MAX:
+                    self.cur_speed = SPEED_STA_MIN
+            elif data[2] == 0x0C:
+                self.cur_rpm += RPM_STEP
+                if self.cur_rpm > RPM_MAX:
+                    self.cur_rpm = RPM_MIN
+            else:
+                return
+            speed_text = f"{self.cur_speed:.1f}"
+            rpm_text = str(self.cur_rpm)
+        self.root.after(0, self.label_spd.config, {"text": speed_text})
+        self.root.after(0, self.label_rpm.config, {"text": rpm_text})
 
     @staticmethod
     def _read_int(value: str, field_name: str) -> int:
@@ -856,12 +1348,32 @@ class CanSimGUI:
         except ValueError as exc:
             raise ValueError(f"{field_name}必须是数字，当前值={value!r}") from exc
 
+    @staticmethod
+    def _normalize_id_format(value: str) -> str:
+        text = str(value).strip().lower().replace("-", "")
+        if text in ("11", "11bit", "standard", "std"):
+            return "11bit"
+        if text in ("29", "29bit", "extended", "ext"):
+            return "29bit"
+        raise ValueError("ID格式必须是 11bit 或 29bit")
+
+    @classmethod
+    def _normalize_bitrate(cls, value: str | int) -> int:
+        text = str(value).strip().lower().replace("k", "000")
+        bitrate = int(float(text))
+        if bitrate in (250, 500):
+            bitrate *= 1000
+        if bitrate not in SUPPORTED_BITRATES:
+            raise ValueError("bitrate必须是 250000 或 500000")
+        return bitrate
+
     def _read_can_config(self):
         return {
             "vid": self._read_int(self.vid_var.get(), "VID"),
             "pid": self._read_int(self.pid_var.get(), "PID"),
             "channel_index": self._read_int(self.channel_index_var.get(), "channelIndex"),
-            "bitrate": self._read_int(self.bitrate_var.get(), "bitrate"),
+            "bitrate": self._normalize_bitrate(self.bitrate_var.get()),
+            "id_format": self._normalize_id_format(self.id_format_var.get()),
         }
 
     def open_can(self):
@@ -874,25 +1386,62 @@ class CanSimGUI:
             self.log_print(
                 f"准备打开CAN：backend={backend_name}, Python={python_bits}bit, "
                 f"VID=0x{config['vid']:04X}, PID=0x{config['pid']:04X}, "
-                f"channelIndex={config['channel_index']}, bitrate={config['bitrate']}"
+                f"channelIndex={config['channel_index']}, id_format={config['id_format']}, "
+                f"bitrate={config['bitrate']}"
             )
-            self.backend = MockBackend() if backend_name == "mock" else WinUsbBackend(**config)
+            self.active_id_format = config["id_format"]
+            self.active_bitrate = config["bitrate"]
+            self.sim_profile = self._sim_profile(self.active_id_format, self.active_bitrate)
+            self.responder = ObdIsoTpResponder(
+                self.get_values,
+                VIN,
+                id_format=self.active_id_format,
+                respond_extended_29bit=(self.active_id_format == "29bit"),
+            )
+            hardware_config = {
+                "vid": config["vid"],
+                "pid": config["pid"],
+                "channel_index": config["channel_index"],
+                "bitrate": config["bitrate"],
+            }
+            hardware_config["tx_mid"] = self.sim_profile["tx_mid"]
+            hardware_config["tx_trailer"] = self.sim_profile["tx_trailer"]
+            self.backend = (
+                MockBackend(self.active_id_format)
+                if backend_name == "mock"
+                else WinUsbBackend(**hardware_config)
+            )
             self.backend.open()
             self.can_opened = True
             self.recv_running = True
+            self.reset_values_for_profile()
             self.recv_thread = threading.Thread(target=self.recv_loop, daemon=True)
             self.recv_thread.start()
 
-            self.log_print(f"✅ CAN盒已打开：{config['bitrate']}bps，channelIndex={config['channel_index']}")
+            discarded_packets = getattr(self.backend, "startup_discarded_packets", 0)
+            self.log_print(
+                f"✅ CAN盒已打开：{config['id_format']} / {config['bitrate']}bps，"
+                f"channelIndex={config['channel_index']}；当前仅监听，不应答；"
+                f"启动清理={discarded_packets}包；"
+                f"USB尾部={self.sim_profile['tx_mid'].hex(' ').upper()} "
+                f"{self.sim_profile['tx_trailer'].hex(' ').upper()}"
+            )
             self.btn_open.config(state="disabled")
             self.btn_close.config(state="normal")
-            self.btn_start.config(state="normal")
+            self.btn_start.config(text="启动仿真应答", state="normal")
+            self.btn_stop.config(state="disabled")
+            self.set_config_widgets_state("disabled")
+            self.sim_status_var.set("状态：仅监听，未启动应答")
+            self.label_sim_status.config(foreground="#996600")
         except Exception as exc:
             self.can_opened = False
             self.recv_running = False
             if self.backend:
                 self.backend.close()
             self.backend = None
+            self.set_config_widgets_state("readonly")
+            self.sim_status_var.set("状态：打开失败")
+            self.label_sim_status.config(foreground="#cc2200")
             self.log_print(f"❌ CAN盒打开失败：{exc}")
 
     def close_can(self):
@@ -908,8 +1457,11 @@ class CanSimGUI:
 
         self.btn_open.config(state="normal")
         self.btn_close.config(state="disabled")
-        self.btn_start.config(state="disabled")
+        self.btn_start.config(text="启动仿真应答", state="disabled")
         self.btn_stop.config(state="disabled")
+        self.set_config_widgets_state("readonly")
+        self.sim_status_var.set("状态：已关闭")
+        self.label_sim_status.config(foreground="#666666")
         self.log_print("✅ CAN盒已关闭")
 
     def start_sim(self):
@@ -918,37 +1470,31 @@ class CanSimGUI:
         self.sim_running = True
         if self.backend and hasattr(self.backend, "last_rx_key"):
             self.backend.last_rx_key = None
+        self.last_answer_time_by_request.clear()
+        self.suppressed_tx_count = 0
+        self.reset_values_for_profile()
         self.sim_thread = threading.Thread(target=self.sim_main_loop, daemon=True)
         self.sim_thread.start()
-        self.btn_start.config(state="disabled")
-        self.btn_stop.config(state="normal")
-        self.log_print("🚗 动态数据已启动：车速/RPM开始变化，OBD请求会实时应答")
+        self.btn_start.config(text="仿真应答运行中", state="disabled")
+        self.btn_stop.config(text="停止仿真应答", state="normal")
+        self.sim_status_var.set("状态：仿真应答运行中")
+        self.label_sim_status.config(foreground="#008000")
+        self.log_print("🚗 仿真应答已启动：收到 01 0D/01 0C 请求并应答后，车速/RPM按正常日志递增")
 
     def stop_sim(self):
         was_running = self.sim_running
         self.sim_running = False
         if was_running:
-            self.log_print("🛑 数据仿真已停止")
+            self.log_print("🛑 仿真应答已停止：CAN盒保持监听，不再发送OBD响应")
         if self.can_opened:
-            self.btn_start.config(state="normal")
+            self.btn_start.config(text="启动仿真应答", state="normal")
+            self.sim_status_var.set("状态：仅监听，未启动应答")
+            self.label_sim_status.config(foreground="#996600")
         self.btn_stop.config(state="disabled")
 
     def sim_main_loop(self):
-        with self.value_lock:
-            self.cur_speed = DEFAULT_SPEED
-            self.cur_rpm = DEFAULT_RPM
-            self.speed_mode = "rise"
-
         while self.sim_running and self.can_opened:
             with self.value_lock:
-                if self.speed_mode == "rise":
-                    self.cur_speed += random.uniform(0.3, 1.1)
-                    if self.cur_speed >= SPEED_RISE_MAX:
-                        self.cur_speed = random.uniform(SPEED_STA_MIN, SPEED_STA_MAX)
-                        self.speed_mode = "stable"
-                else:
-                    self.cur_speed = random.uniform(SPEED_STA_MIN, SPEED_STA_MAX)
-                self.cur_rpm = random.randint(RPM_MIN, RPM_MAX)
                 speed_text = f"{self.cur_speed:.1f}"
                 rpm_text = str(self.cur_rpm)
 
@@ -959,11 +1505,38 @@ class CanSimGUI:
     def recv_loop(self):
         while self.recv_running and self.can_opened and self.backend:
             try:
-                messages = self.backend.receive(timeout_ms=100, max_messages=5)
+                messages = self.backend.receive(timeout_ms=100, max_messages=50)
                 for msg in messages:
-                    if self.should_log_rx(msg):
+                    logged_rx = self.should_log_rx(msg)
+                    if logged_rx:
                         self.log_print(f"[RX] {fmt_frame(msg)}")
-                    self.send_obd_response(msg)
+
+                    is_speed_request = self.is_speed_request(msg)
+                    is_value_request = self.is_obd_value_request(msg)
+                    id_format_ok = self.matches_selected_id_format(msg)
+
+                    if is_speed_request and logged_rx and not self.sim_running:
+                        actual = self.actual_id_format(msg)
+                        self.log_print(
+                            f"⚠️ 收到车速请求 PID 0x0D，但仿真应答未启动，所以不会发送 41 0D；"
+                            f"实际总线帧格式={actual}"
+                        )
+                    elif is_value_request and logged_rx and not id_format_ok:
+                        data = pad8(msg.data)
+                        selected = self.active_id_format
+                        actual = self.actual_id_format(msg)
+                        self.log_print(
+                            f"⚠️ 收到 PID 0x{data[2]:02X} 请求，但当前会话固定为 {selected}，"
+                            f"实际收到 {actual}，已忽略；如要模拟该格式，请先关闭CAN盒后重新选择"
+                        )
+
+                    if self.sim_running and id_format_ok and self.should_answer_request(msg):
+                        if is_speed_request:
+                            frame_type = "29bit" if msg.is_extended_id else "11bit"
+                            self.log_print(
+                                f"🔎 收到车速请求 PID 0x0D：{frame_type} id=0x{msg.arbitration_id:X}"
+                            )
+                        self.send_obd_response(msg)
             except Exception as exc:
                 self.log_print(f"❌ CAN收发异常：{exc}")
                 if self.backend:
@@ -978,19 +1551,30 @@ class CanSimGUI:
                 break
 
     def send_obd_response(self, msg: CanMessage):
-        if not self.backend or not self.can_opened:
+        if not self.backend or not self.can_opened or not self.sim_running:
             return
         for item in self.responder.handle(msg):
             if item.delay_ms > 0:
                 time.sleep(item.delay_ms / 1000)
             self.backend.send(item.message)
             self.log_print(f"[TX] {fmt_frame(item.message)}")
+            if self.is_speed_response(item.message):
+                data = pad8(item.message.data)
+                frame_type = "29bit" if item.message.is_extended_id else "11bit"
+                self.log_print(
+                    f"✅ 已发送车速响应 PID 0x0D：value={data[3]} km/h，"
+                    f"{frame_type} id=0x{item.message.arbitration_id:X}"
+                )
+            self.advance_value_after_response(item.message)
 
     def _set_closed_buttons(self):
         self.btn_open.config(state="normal")
         self.btn_close.config(state="disabled")
-        self.btn_start.config(state="disabled")
+        self.btn_start.config(text="启动仿真应答", state="disabled")
         self.btn_stop.config(state="disabled")
+        self.set_config_widgets_state("readonly")
+        self.sim_status_var.set("状态：异常关闭")
+        self.label_sim_status.config(foreground="#cc2200")
 
     def on_close(self):
         self.close_can()
@@ -1026,8 +1610,9 @@ if __name__ == "__main__":
 #    7E8  10 ... / 21 ... / 22 ...     多帧响应 VIN
 # 5. 脚本通过 USB-CAN 盒把响应帧发回 CAN 总线。
 #
-# 注意：ISO 15765-4/J1979 的常见请求 ID 是 0x7DF，常见 ECU 响应 ID 是
-# 0x7E8。当前代码主要按 11 位标准帧来模拟，默认不主动处理 29 位扩展帧。
+# 注意：ISO 15765-4/J1979 的 11 位常见请求 ID 是 0x7DF，常见 ECU 响应 ID 是
+# 0x7E8；29 位常见功能请求 ID 形如 0x18DB33F1，常见 ECU 响应 ID 形如
+# 0x18DAF110。当前代码会根据 UI 选择只应答 11bit 或 29bit，避免混用。
 #
 #
 # 二、主要类和职责
@@ -1111,21 +1696,24 @@ if __name__ == "__main__":
 #    打开 USB 后，代码会发送从正常工具 Bus Hound 日志中整理出的初始化数据。
 #    这些初始化包的作用大致包括：
 #    - 选择 CAN 通道。
-#    - 设置 CAN 波特率，例如 500000 bps。
+#    - 设置 CAN 工作参数。当前 500000 bps 初始化包来自 15765-11b-500k.txt；
+#      250000 bps 初始化包来自 15765-11b-250k-3.txt。11bit/29bit 不改变
+#      这组打开包，实际发送帧时通过 CAN 帧的扩展帧标志区分。
 #    - 设置工作模式。
 #    - 让 CAN 盒进入可以收发 CAN 帧的状态。
 #
 #    这里要特别注意：
 #    初始化包必须尽量贴近正常工具的行为。之前异常日志里出现过 USB 传输错误
 #    和设备重新枚举，说明错误初始化可能让 CAN 盒进入异常状态，甚至导致对端
-#    OBD 设备无响应。因此本代码使用的是正常日志里匹配过的一组初始化序列。
+#    OBD 设备无响应。因此本代码按 250K/500K 分别使用正常日志里匹配过的
+#    初始化序列。
 #
 # 7. 启动接收线程
 #    CAN 盒打开成功后，CanSimGUI 会启动 recv_loop() 线程。
 #    这个线程循环调用：
-#    backend.receive(timeout_ms=100, max_messages=5)
-#    它不会等你点击“启动动态数据”才应答；只要 CAN 盒已打开，收到 OBD 请求
-#    就会尝试响应。
+#    backend.receive(timeout_ms=100, max_messages=50)
+#    打开 CAN 盒后先进入监听模式，只打印收到的 OBD 请求，不主动应答。
+#    点击“启动仿真应答”后，收到 OBD 请求才会尝试响应。
 #
 # 8. 从 USB 端点读取 CAN 报文
 #    WinUsbBackend.receive() 内部调用 WinUsb_ReadPipe，从 0x81 端点读数据。
@@ -1141,7 +1729,12 @@ if __name__ == "__main__":
 #    - byte 12    ：扩展帧标记，0 表示标准帧，非 0 表示扩展帧。
 #    - byte 13    ：DLC，也就是 CAN 数据长度。
 #    - byte 14-21 ：CAN 数据区，最多 8 字节。
-#    - byte 22-31 ：保留或填充。
+#    - byte 22-23 ：正常工具里像是保留/未使用字段。
+#    - byte 24-31 ：不同 bit/bitrate 的 rpm+speed 正常工具日志不同，当前通过
+#                   SIM_PROFILES 按 UI 选择自动填充。
+#
+#    另外，0x01020800/0x01020801 这类对象更像 CAN 盒自己的状态/缓存对象，
+#    不是 OBD 请求。当前代码会在解析阶段过滤掉，避免干扰 OBD 判断。
 #
 #    例如收到：
 #    ID = 0x7DF
@@ -1150,17 +1743,22 @@ if __name__ == "__main__":
 #
 # 10. OBD 请求解析
 #     ObdIsoTpResponder.handle(msg) 会检查：
-#     - CAN ID 是否是功能寻址 0x7DF，或物理寻址 0x7E0-0x7E7。
-#     - 是否是 11 位标准帧。
+#     - CAN ID 是否是当前 UI 选择的 OBD 请求格式。
+#       11bit 模式只处理 0x7DF 或 0x7E0-0x7E7。
+#       29bit 模式只处理 0x18DB33xx 或 0x18DA10xx 这类扩展 OBD 地址。
 #     - 是否是 ISO-TP 单帧请求。
-#     - 服务号是否为当前支持的服务，例如 01 或 09。
+#     - 服务号是否为当前支持的服务，例如 01、03、07、09、0A、10、22。
 #
 #     常见请求含义：
 #     - 01 00：查询支持的 Mode 01 PID 范围。
+#     - 01 20 / 01 40 / 01 60 / 01 80 / 01 A0：继续查询后续 PID 范围。
 #     - 01 0C：请求发动机转速。
 #     - 01 0D：请求车速。
+#     - 01 A6：请求 ODO/累计里程。该 PID 在很多工具里按扩展 PID 使用。
+#     - 03 / 07 / 0A：请求故障码，当前默认返回无故障码。
 #     - 09 00：查询支持的 Mode 09 PID。
 #     - 09 02：请求 VIN。
+#     - 22 xxxx：UDS ReadDataByIdentifier，当前只对日志里出现的少量 DID 做模拟。
 #
 # 11. 生成 OBD 响应
 #     如果请求可以识别，代码会生成对应响应。
@@ -1176,20 +1774,32 @@ if __name__ == "__main__":
 #     - 连续帧 Consecutive Frame：PCI 以 0x21、0x22、0x23... 递增。
 #     当前代码为了模拟工具行为，会按设定的短延时依次发出多帧。
 #
+#     当前 Mode 01 已按你提供的日志和界面清单补充了这些关键项：
+#     - 0x0A：燃油压力。
+#     - 0x46：环境温度。
+#     - 0x66：空气流量/MAF 相关扩展项。
+#     - 0x9A：电池电压类扩展项。
+#     - 0xA6：ODO/累计里程。
+#     - 0xB2：SOH。
+#     - 0xB7：电池电流、电压、温度类扩展项。
+#
 # 12. 编码并发送响应
 #     生成 CanMessage 后，WinUsbBackend.send() 会把它重新编码成 CAN 盒需要的
-#     32 字节 USB 数据对象，然后调用 WinUsb_WritePipe 写到 0x01 端点。
+#     32 字节 USB 数据对象，并按 SIM_PROFILES 补上该模式从 rpm+speed 正常
+#     日志里提取出的 byte24-31，然后调用 WinUsb_WritePipe 写到 0x01 端点。
 #     CAN 盒收到这个 USB 包后，再把里面的 CAN ID 和 8 字节数据真正发到 CANH/
 #     CANL 总线上。
 #
 #
-# 四、“打开 CAN”和“启动动态数据”的区别
+# 四、“打开 CAN”和“启动仿真应答”的区别
 # -----------------------------------------------------------------------------
-# 当前代码里，“打开 CAN”以后就已经开始接收 OBD 请求并自动应答。
+# 当前代码里，“打开 CAN”以后只开始接收 OBD 请求和显示 RX 日志，不会发送 TX 响应。
 #
-# “启动动态数据”不是应答开关，它只控制模拟值是否变化：
-# - 未启动动态数据时，车速/RPM 使用默认值。
-# - 启动动态数据后，车速/RPM 会按代码里的随机逻辑变化。
+# “启动仿真应答”才是应答开关：
+# - 未启动仿真应答时，只监听，不发送 OBD 响应。
+# - 启动仿真应答后，车速/RPM 会从当前 11bit/29bit、250K/500K 对应的
+#   rpm+speed 正常日志起始值开始；每次成功应答 01 0D 后车速 +1，每次成功
+#   应答 01 0C 后 RPM +1。
 #
 # 这样设计的原因是：OBD/ISO15765 本身是请求-应答协议。对端 OBD 设备问什么，
 # CAN 盒就应该尽快按协议回答什么，而不是卡在某个固定 PID 或等待某个按钮后
@@ -1206,6 +1816,10 @@ if __name__ == "__main__":
 #
 # 2. CanSimGUI.should_log_rx()
 #    对界面 RX 日志做节流，避免同一帧在界面里刷屏太快。
+#
+# 3. CanSimGUI.should_answer_request()
+#    对同一个单帧 OBD 请求做很短的 TX 限速，避免 USB-CAN 盒重复吐缓存帧时
+#    脚本在几十毫秒内重复应答同一个 PID，导致对端 OBD 设备被刷屏。
 #
 # 注意：去重只应该减少重复处理，不应该影响真实的新请求。如果对端设备持续按
 # 周期发送请求，只要时间戳或数据对象不同，代码仍然会继续处理。

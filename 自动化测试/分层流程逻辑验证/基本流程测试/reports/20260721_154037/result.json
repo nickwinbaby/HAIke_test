@@ -1,0 +1,113 @@
+{
+  "suite_name": "完整电源CAN流程套件",
+  "suite_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\自动化测试\\分层流程逻辑验证\\json流程测试\\suite_完整流程.json",
+  "started_at": "2026-07-21T15:40:34",
+  "finished_at": "2026-07-21T15:40:37",
+  "duration_seconds": 3.081,
+  "total": 1,
+  "passed": 1,
+  "failed": 0,
+  "results": [
+    {
+      "name": "完整电源CAN流程",
+      "status": "PASS",
+      "error": "",
+      "started_at": "2026-07-21T15:40:34",
+      "finished_at": "2026-07-21T15:40:37",
+      "duration_seconds": 3.081,
+      "steps": [
+        {
+          "index": 1,
+          "name": "连接程控电源",
+          "action": "power.connect",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:34",
+          "finished_at": "2026-07-21T15:40:34"
+        },
+        {
+          "index": 2,
+          "name": "设置12V并打开输出",
+          "action": "power.set_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:34",
+          "finished_at": "2026-07-21T15:40:34"
+        },
+        {
+          "index": 3,
+          "name": "等待90秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:34",
+          "finished_at": "2026-07-21T15:40:35"
+        },
+        {
+          "index": 4,
+          "name": "2秒内逐步升到14.5V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:35",
+          "finished_at": "2026-07-21T15:40:35"
+        },
+        {
+          "index": 5,
+          "name": "启动CAN模拟",
+          "action": "can.start",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:35",
+          "finished_at": "2026-07-21T15:40:35"
+        },
+        {
+          "index": 6,
+          "name": "CAN持续工作2分钟",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:35",
+          "finished_at": "2026-07-21T15:40:36"
+        },
+        {
+          "index": 7,
+          "name": "停止CAN模拟",
+          "action": "can.stop",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:36",
+          "finished_at": "2026-07-21T15:40:36"
+        },
+        {
+          "index": 8,
+          "name": "2秒内逐步降到12V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:36",
+          "finished_at": "2026-07-21T15:40:37"
+        },
+        {
+          "index": 9,
+          "name": "等待90秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:37",
+          "finished_at": "2026-07-21T15:40:37"
+        },
+        {
+          "index": 10,
+          "name": "程控电源设置0V并断开输出",
+          "action": "power.output_off",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:40:37",
+          "finished_at": "2026-07-21T15:40:37"
+        }
+      ],
+      "case_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\自动化测试\\分层流程逻辑验证\\json流程测试\\case_完整电源CAN流程.json"
+    }
+  ]
+}

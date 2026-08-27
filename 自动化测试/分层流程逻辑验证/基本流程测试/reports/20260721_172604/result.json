@@ -1,0 +1,215 @@
+{
+  "suite_name": "两条完整流程验证套件",
+  "suite_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\自动化测试\\分层流程逻辑验证\\json流程测试\\suite_两条用例验证.json",
+  "case_interval_seconds": 30.0,
+  "started_at": "2026-07-21T17:25:58",
+  "finished_at": "2026-07-21T17:26:04",
+  "duration_seconds": 5.875,
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "results": [
+    {
+      "name": "完整流程验证-01",
+      "status": "PASS",
+      "error": "",
+      "started_at": "2026-07-21T17:25:58",
+      "finished_at": "2026-07-21T17:26:01",
+      "duration_seconds": 2.781,
+      "steps": [
+        {
+          "index": 1,
+          "name": "搜索并连接程控电源USB",
+          "action": "power.connect",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:25:58",
+          "finished_at": "2026-07-21T17:25:58"
+        },
+        {
+          "index": 2,
+          "name": "程控电源调节到12V并输出",
+          "action": "power.set_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:25:58",
+          "finished_at": "2026-07-21T17:25:58"
+        },
+        {
+          "index": 3,
+          "name": "等待60秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:25:58",
+          "finished_at": "2026-07-21T17:25:59"
+        },
+        {
+          "index": 4,
+          "name": "2秒内从12V逐步升到14.5V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:25:59",
+          "finished_at": "2026-07-21T17:25:59"
+        },
+        {
+          "index": 5,
+          "name": "CAN模拟开始工作",
+          "action": "can.start",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:25:59",
+          "finished_at": "2026-07-21T17:25:59"
+        },
+        {
+          "index": 6,
+          "name": "CAN持续工作2分钟",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:25:59",
+          "finished_at": "2026-07-21T17:26:00"
+        },
+        {
+          "index": 7,
+          "name": "CAN停止工作",
+          "action": "can.stop",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:00",
+          "finished_at": "2026-07-21T17:26:00"
+        },
+        {
+          "index": 8,
+          "name": "2秒内从14.5V逐步降到12V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:00",
+          "finished_at": "2026-07-21T17:26:00"
+        },
+        {
+          "index": 9,
+          "name": "等待90秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:00",
+          "finished_at": "2026-07-21T17:26:01"
+        },
+        {
+          "index": 10,
+          "name": "程控电源断电为0V",
+          "action": "power.output_off",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:01",
+          "finished_at": "2026-07-21T17:26:01"
+        }
+      ],
+      "case_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\自动化测试\\分层流程逻辑验证\\json流程测试\\case_001_电压归零等待30秒.json"
+    },
+    {
+      "name": "完整流程验证-02",
+      "status": "PASS",
+      "error": "",
+      "started_at": "2026-07-21T17:26:01",
+      "finished_at": "2026-07-21T17:26:04",
+      "duration_seconds": 2.785,
+      "steps": [
+        {
+          "index": 1,
+          "name": "搜索并连接程控电源USB",
+          "action": "power.connect",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:01",
+          "finished_at": "2026-07-21T17:26:01"
+        },
+        {
+          "index": 2,
+          "name": "程控电源调节到12V并输出",
+          "action": "power.set_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:01",
+          "finished_at": "2026-07-21T17:26:01"
+        },
+        {
+          "index": 3,
+          "name": "等待60秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:01",
+          "finished_at": "2026-07-21T17:26:02"
+        },
+        {
+          "index": 4,
+          "name": "2秒内从12V逐步升到14.5V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:02",
+          "finished_at": "2026-07-21T17:26:02"
+        },
+        {
+          "index": 5,
+          "name": "CAN模拟开始工作",
+          "action": "can.start",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:02",
+          "finished_at": "2026-07-21T17:26:02"
+        },
+        {
+          "index": 6,
+          "name": "CAN持续工作2分钟",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:02",
+          "finished_at": "2026-07-21T17:26:03"
+        },
+        {
+          "index": 7,
+          "name": "CAN停止工作",
+          "action": "can.stop",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:03",
+          "finished_at": "2026-07-21T17:26:03"
+        },
+        {
+          "index": 8,
+          "name": "2秒内从14.5V逐步降到12V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:03",
+          "finished_at": "2026-07-21T17:26:03"
+        },
+        {
+          "index": 9,
+          "name": "等待90秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:03",
+          "finished_at": "2026-07-21T17:26:04"
+        },
+        {
+          "index": 10,
+          "name": "程控电源断电为0V",
+          "action": "power.output_off",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T17:26:04",
+          "finished_at": "2026-07-21T17:26:04"
+        }
+      ],
+      "case_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\自动化测试\\分层流程逻辑验证\\json流程测试\\case_002_电压归零等待30秒.json"
+    }
+  ]
+}

@@ -31,3 +31,12 @@ Thumbs.db
 *.zip
 *.7z
 *.rar
+
+# Local installer/tool binaries
+auto_test_reboot/tools/
+
+# Local generated/data folders
+assets/
+outputs/
+tool_data/
+无效文件/

@@ -1,0 +1,18 @@
+<?jelly escape-by-default='true'?>
+<j:jelly xmlns:j="jelly:core" xmlns:st="jelly:stapler" xmlns:d="jelly:define" 
+         xmlns:l="/lib/layout" xmlns:t="/lib/hudson" xmlns:f="/lib/form">
+  <!--
+    This jelly script is used for per-project configuration.
+
+    See global.jelly for a general discussion about jelly script.
+  -->
+  <f:entry title="${%Reports}">
+    <f:repeatableProperty field="reportTargets">
+      <f:entry title=""> 
+        <div align="right"> 
+          <f:repeatableDeleteButton value="${%Delete report}"/> 
+        </div> 
+      </f:entry>
+    </f:repeatableProperty>
+  </f:entry>
+</j:jelly>

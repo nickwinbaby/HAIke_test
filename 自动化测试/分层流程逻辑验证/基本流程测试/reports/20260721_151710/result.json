@@ -1,0 +1,124 @@
+{
+  "suite_name": "两条用例验证套件",
+  "suite_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\json流程测试\\suite_两条用例验证.json",
+  "started_at": "2026-07-21T15:17:10",
+  "finished_at": "2026-07-21T15:17:10",
+  "duration_seconds": 0.669,
+  "total": 2,
+  "passed": 2,
+  "failed": 0,
+  "results": [
+    {
+      "name": "基本流程验证-01",
+      "status": "PASS",
+      "error": "",
+      "started_at": "2026-07-21T15:17:10",
+      "finished_at": "2026-07-21T15:17:10",
+      "duration_seconds": 0.341,
+      "steps": [
+        {
+          "index": 1,
+          "name": "连接程控电源",
+          "action": "power.connect",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 2,
+          "name": "设置12V并输出",
+          "action": "power.set_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 3,
+          "name": "逐步降到0V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 4,
+          "name": "等待30秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 5,
+          "name": "断开输出",
+          "action": "power.output_off",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        }
+      ],
+      "case_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\json流程测试\\case_001_电压归零等待30秒.json"
+    },
+    {
+      "name": "基本流程验证-02",
+      "status": "PASS",
+      "error": "",
+      "started_at": "2026-07-21T15:17:10",
+      "finished_at": "2026-07-21T15:17:10",
+      "duration_seconds": 0.327,
+      "steps": [
+        {
+          "index": 1,
+          "name": "连接程控电源",
+          "action": "power.connect",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 2,
+          "name": "设置12V并输出",
+          "action": "power.set_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 3,
+          "name": "逐步降到0V",
+          "action": "power.ramp_voltage",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 4,
+          "name": "等待30秒",
+          "action": "wait",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        },
+        {
+          "index": 5,
+          "name": "断开输出",
+          "action": "power.output_off",
+          "status": "PASS",
+          "error": "",
+          "started_at": "2026-07-21T15:17:10",
+          "finished_at": "2026-07-21T15:17:10"
+        }
+      ],
+      "case_path": "C:\\Users\\G1006871\\Desktop\\BIANYI\\json流程测试\\case_002_电压归零等待30秒.json"
+    }
+  ]
+}
