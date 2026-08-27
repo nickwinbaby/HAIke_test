@@ -40,3 +40,4 @@ assets/
 outputs/
 tool_data/
 无效文件/
+*.spec
