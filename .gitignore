@@ -43,3 +43,5 @@ tool_data/
 *.spec
 results/
 .robotcode_cache/
+current_curve_logs/
+current/_curve/_logs/
