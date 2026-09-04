@@ -13,6 +13,10 @@ import json
 import os
 import getpass
 import re
+import csv
+import zlib
+import queue
+import threading
 import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog, messagebox, scrolledtext, ttk
@@ -33,6 +37,8 @@ MESSAGE_ID_NAMES = {
     0x0108: "终端升级结果通知",
     0x0200: "位置信息汇报",
     0x0201: "位置信息查询应答",
+    0x0F3B: "压缩数据上报",
+    0x0F42: "查询TBOX信息指令",
     0x0303: "信息点播/取消",
     0x0500: "车辆控制应答",
     0x0700: "行驶记录仪数据上传",
@@ -53,6 +59,7 @@ MESSAGE_ID_NAMES = {
     0x8106: "查询指定终端参数",
     0x8107: "查询终端属性",
     0x8108: "下发终端升级包",
+    0x8140: "平台数据同步",
     0x8201: "位置信息查询",
     0x8202: "临时位置跟踪控制",
     0x8203: "人工确认报警消息",
@@ -318,12 +325,14 @@ def format_bits(value, width):
 
 def parse_message_body_property(prop, protocol="2013"):
     binary = format_bits(prop, 16)
+    prop_hex = f"{prop:04X}"
     encrypt_type = (prop >> 10) & 0x07
     version_flag = protocol == "2019" and bool((prop >> 14) & 0x01)
     return {
-        f"[{binary}]消息体属性": prop,
-        "协议标准": "JTT2019" if protocol == "2019" else "JTT2013",
-        "版本号": "JTT2019" if version_flag else "JTT2013",
+        f"[{prop_hex}]消息体属性HEX": f"0x{prop_hex}",
+        f"[{binary}]消息体属性二进制": binary,
+        "协议标准": "JT/T 808-2019" if protocol == "2019" else "JT/T 808-2013",
+        "版本号": "JTT2019" if version_flag else ("未启用版本标识" if protocol == "2019" else "不适用"),
         "[bit15]保留": (prop >> 15) & 0x01,
         "[bit14]版本标识" if protocol == "2019" else "[bit14]保留": (prop >> 14) & 0x01,
         "[bit13]是否分包": bool((prop >> 13) & 0x01),
@@ -347,7 +356,7 @@ def parse_header(packet_without_checksum, protocol="2013"):
 
     require_length(packet_without_checksum, offset, phone_len + 2)
     phone_raw = packet_without_checksum[offset:offset + phone_len]
-    phone = bytes_to_bcd(phone_raw).lstrip("0") or "0"
+    phone = bytes_to_bcd(phone_raw)
     offset += phone_len
     serial, offset = read_u16(packet_without_checksum, offset)
 
@@ -685,6 +694,7 @@ def format_number(value, digits=4):
 
 LOCATION_EXTRA_PID_COLUMNS = [0x01, 0x02, 0x07, 0x2A, 0x2B, 0x30, 0x31]
 LOCATION_E6_PID_COLUMNS = [0x08, 0x14, 0x15]
+LOCATION_BASE_HEADERS = ["纬度", "经度", "高度", "速度", "方向", "时间", "点火状态", "定位"]
 
 
 def decode_e6_pid_value(pid, data):
@@ -854,6 +864,472 @@ def parse_location_report(body, name="位置信息汇报"):
     })
     if extra:
         result["附加信息对象"] = parse_location_extra(extra)
+    return result
+
+
+F3B_CSV_COLUMNS = [
+    ("516129", "时间", "BCD/文本时间"),
+    ("516130", "纬度", "度"),
+    ("516131", "经度", "度"),
+    ("516132", "GPS速度", "km/h"),
+    ("516133", "定位状态", "bit0~13方向;bit14南纬;bit15西经"),
+    ("516134", "高度", "m"),
+    ("1624", "仪表车速", "km/h"),
+    ("190", "发动机转速", "rpm"),
+    ("513", "发动机实际扭矩", "%"),
+    ("91", "油门踏板开度", "%"),
+    ("183", "燃油消耗率", "L/h"),
+    ("516097", "开关信号", "bit0驻车/bit1离合/bit2制动"),
+    ("102", "发动机进气歧管压力", "kPa"),
+    ("100", "发动机机油压力", "kPa"),
+    ("110", "发动机冷却液温度", "℃"),
+    ("520_10", "缓速器实际扭矩百分比", "%"),
+    ("516120", "发动机/缓速器扭矩模式", ""),
+    ("1715", "需求缓速器扭矩百分比", "%"),
+    ("1717", "当前转速下缓速器最大扭矩百分比", "%"),
+    ("523", "当前档位", ""),
+    ("1807", "方向盘转角", "°"),
+    ("521", "制动踏板位置", "%"),
+    ("516125", "VCU坡度", "%"),
+]
+
+F3B_CSV_COLUMN_MAP = {
+    code: {"name": name, "unit": unit}
+    for code, name, unit in F3B_CSV_COLUMNS
+}
+
+
+def is_invalid_ff_text(value):
+    text = str(value or "").strip()
+    return bool(text) and len(text) % 2 == 0 and re.fullmatch(r"(?:FF)+", text, re.IGNORECASE)
+
+
+F3B_HIGH_DENSITY_TYPE_NAMES = {
+    0b0001: "100ms",
+    0b0010: "500ms",
+    0b0011: "1s",
+    0b0100: "5s",
+    0b0101: "10s",
+    0b0110: "30s",
+    0b0111: "1m",
+    0b1000: "2m",
+}
+
+F3B_SWITCH_SIGNAL_BITS = {
+    0: {0: "驻车制动开关关闭", 1: "驻车制动开关打开"},
+    1: {0: "离合开关松开", 1: "离合开关踩下"},
+    2: {0: "制动踏板开关松下", 1: "制动踏板开关踩下"},
+    3: {0: "点火开关位置 IGN OFF", 1: "点火开关位置 IGN ON"},
+    4: {0: "ABS 未介入信号", 1: "ABS 介入信号"},
+    5: {0: "TCS 未介入信号", 1: "TCS 介入信号"},
+    6: {0: "变速器空挡关", 1: "变速器空挡开"},
+    7: {0: "挂车连接信号无效", 1: "挂车连接信号有效"},
+    8: {0: "车门关信号无效", 1: "车门关信号有效"},
+    13: {0: "巡航激活状态未激活", 1: "巡航激活状态有效"},
+    14: {0: "挂车驻车状态关闭", 1: "挂车驻车状态有效"},
+    15: {0: "倒挡开关状态关闭", 1: "倒挡开关状态有效"},
+}
+
+F3B_FUEL_LEAK_WARNING_NAMES = {
+    0b00: "No Warning",
+    0b01: "Warning",
+    0b10: "Reserved",
+    0b11: "Don't care",
+}
+
+F3B_EP_MODE_NAMES = {
+    0b00: "ECO驾驶模式",
+    0b01: "Power驾驶模式",
+    0b10: "保留",
+    0b11: "无效",
+}
+
+F3B_TORQUE_MODE_NAMES = {
+    0b0000: "低怠速调速器/无请求(默认模式)",
+    0b0001: "加速踏板/操作员选择",
+    0b0010: "巡航控制",
+    0b0011: "PTO 调速器",
+    0b0100: "道路速度调速器",
+    0b0101: "ASR 控制",
+    0b0110: "传动控制",
+    0b0111: "ABS 控制",
+    0b1000: "转矩限制",
+    0b1001: "高速调速器",
+    0b1010: "制动系统",
+    0b1011: "远程加速器",
+    0b1100: "未定义",
+    0b1101: "未定义",
+    0b1110: "其他",
+    0b1111: "不可用",
+}
+
+
+def parse_0f3b_compress_flag(flag):
+    bit0 = flag & 0x01
+    high_density_type = (flag >> 1) & 0x0F
+    return {
+        f"[{flag:02X}]压缩标志HEX": f"0x{flag:02X}",
+        f"[{flag:08b}]压缩标志二进制": f"{flag:08b}",
+        "[bit0]是否压缩": "1-Zip压缩" if bit0 else "0-不压缩",
+        "[bit1~bit4]高密采集类型": (
+            f"{high_density_type:04b}-{F3B_HIGH_DENSITY_TYPE_NAMES.get(high_density_type, '未定义')}"
+        ),
+    }
+
+
+def f3b_value_with_unit(value, unit):
+    text = str(value).strip()
+    return f"{text} {unit}" if unit and text else text
+
+
+def parse_f3b_int_text(value, binary_width=None):
+    text = str(value or "").strip()
+    if not text or is_invalid_ff_text(text):
+        return None
+    if binary_width and re.fullmatch(rf"[01]{{{binary_width}}}", text):
+        return int(text, 2)
+    if text.lower().startswith("0x"):
+        return int(text, 16)
+    if re.search(r"[A-Fa-f]", text):
+        return int(text, 16)
+    if re.fullmatch(r"-?\d+(?:\.\d+)?", text):
+        return int(float(text))
+    return None
+
+
+def format_f3b_time(value):
+    text = str(value or "").strip()
+    if len(text) == 12 and text.isdigit():
+        return f"20{text[0:2]}-{text[2:4]}-{text[4:6]} {text[6:8]}:{text[8:10]}:{text[10:12]}"
+    if len(text) == 14 and text.isdigit():
+        return f"{text[0:4]}-{text[4:6]}-{text[6:8]} {text[8:10]}:{text[10:12]}:{text[12:14]}"
+    return text
+
+
+def format_f3b_location_status(value):
+    raw = parse_f3b_int_text(value, binary_width=16)
+    if raw is None:
+        return str(value).strip()
+    direction = raw & 0x3FFF
+    lat_dir = "南纬" if (raw >> 14) & 0x01 else "北纬"
+    lon_dir = "西经" if (raw >> 15) & 0x01 else "东经"
+    return f"{direction}° {lat_dir} {lon_dir}"
+
+
+def format_f3b_switch_signal_object(value):
+    raw = parse_f3b_int_text(value, binary_width=16)
+    if raw is None:
+        return {}
+
+    result = {}
+    for bit in range(0, 9):
+        bit_value = (raw >> bit) & 0x01
+        result[f"bit{bit}"] = f"{bit_value}-{F3B_SWITCH_SIGNAL_BITS[bit][bit_value]}"
+
+    fuel_warning = (raw >> 9) & 0x03
+    ep_mode = (raw >> 11) & 0x03
+    result["bit9~bit10"] = f"{fuel_warning:02b}-{F3B_FUEL_LEAK_WARNING_NAMES.get(fuel_warning, 'Unknown')}"
+    result["bit11~bit12"] = f"{ep_mode:02b}-{F3B_EP_MODE_NAMES.get(ep_mode, 'Unknown')}"
+
+    for bit in range(13, 16):
+        bit_value = (raw >> bit) & 0x01
+        result[f"bit{bit}"] = f"{bit_value}-{F3B_SWITCH_SIGNAL_BITS[bit][bit_value]}"
+    return result
+
+
+def format_f3b_switch_signal(value):
+    switch_obj = format_f3b_switch_signal_object(value)
+    if not switch_obj:
+        return str(value).strip()
+    return "\n".join(f"{key}: {item}" for key, item in switch_obj.items())
+
+
+def format_f3b_torque_mode(value):
+    raw = parse_f3b_int_text(value, binary_width=4)
+    if raw is None:
+        return str(value).strip()
+    mode = raw & 0x0F
+    return f"{mode:04b}-{F3B_TORQUE_MODE_NAMES.get(mode, 'Unknown')}"
+
+
+def format_f3b_csv_value(code, value, unit):
+    text = str(value or "").strip()
+    if is_invalid_ff_text(text):
+        return "无效"
+    if code == "516129":
+        return format_f3b_time(text)
+    if code in ("516130", "516131"):
+        try:
+            return f"{float(text):.6f} 度"
+        except ValueError:
+            return f3b_value_with_unit(text, "度")
+    if code == "516132":
+        return f3b_value_with_unit(text, "km/h")
+    if code == "516133":
+        return format_f3b_location_status(text)
+    if code == "516134":
+        return f3b_value_with_unit(text, "m")
+    if code == "516097":
+        return format_f3b_switch_signal(text)
+    if code == "516120":
+        return format_f3b_torque_mode(text)
+    return f3b_value_with_unit(text, unit)
+
+
+def format_f3b_summary_number(data, scale=1, unit=""):
+    if data and all(item == 0xFF for item in data):
+        return "无效"
+    value = int.from_bytes(data, "big") * scale
+    return f3b_value_with_unit(format_number(value), unit)
+
+
+TBOX_SUB_MESSAGE_NAMES = {
+    0x08: "终端设备属性上传",
+    0x24: "设置海外模式应答",
+    0x25: "查询海外模式应答",
+}
+
+TBOX_OVERSEAS_MODE_NAMES = {
+    0x01: "国内",
+    0x02: "海外",
+}
+
+TBOX_CONFIG_RESULT_NAMES = {
+    0x00: "设置失败",
+    0x01: "设置成功",
+}
+
+TBOX_JSON_FIELD_NAMES = {
+    "appVer": "APP软件版本",
+    "manuf": "厂商标识",
+    "countryCode": "国别编码",
+    "overseasMode": "海外模式",
+    "ip_address": "公网IP地址",
+    "ip_info": "IP归属地(国家/地区)",
+}
+
+
+def describe_tbox_overseas_mode(value):
+    return f"{value}-{TBOX_OVERSEAS_MODE_NAMES.get(value, f'Unknown({value})')}"
+
+
+def parse_tbox_json_content(content):
+    text = decode_trimmed_text(content)
+    result = {
+        "JSON文本": text,
+    }
+    if not text:
+        result["解析提示"] = "JSON 内容为空。"
+        return result
+    try:
+        json_obj = json.loads(text)
+    except json.JSONDecodeError as exc:
+        result["JSON解析错误"] = str(exc)
+        return result
+
+    result["JSON对象"] = json_obj
+    if isinstance(json_obj, dict):
+        field_obj = {}
+        for raw_key, label in TBOX_JSON_FIELD_NAMES.items():
+            if raw_key not in json_obj:
+                continue
+            value = json_obj[raw_key]
+            if raw_key == "overseasMode":
+                try:
+                    value = describe_tbox_overseas_mode(int(value))
+                except (TypeError, ValueError):
+                    value = f"{value}-Unknown({value})"
+            field_obj[f"{raw_key}-{label}"] = value
+        if field_obj:
+            result["字段对象"] = field_obj
+    else:
+        result["解析提示"] = "JSON 内容不是对象结构。"
+    return result
+
+
+def parse_0f42_tbox_info(body):
+    result = {"查询TBOX信息指令": hex_slice(body)}
+    records = []
+    offset = 0
+    index = 1
+
+    while offset < len(body):
+        record_start = offset
+        if len(body) - offset < 5:
+            result["解析提示"] = f"0F42 子消息头不足 5 字节，偏移 {offset} 剩余 {len(body) - offset} 字节。"
+            result["未解析尾部HEX"] = hex_slice(body[offset:])
+            break
+
+        serial = int.from_bytes(body[offset:offset + 2], "big")
+        sub_msg_id = body[offset + 2]
+        content_len = int.from_bytes(body[offset + 3:offset + 5], "big")
+        offset += 5
+
+        record = {
+            "序号": index,
+            f"[{body[record_start:record_start + 2].hex().upper()}]流水号": serial,
+            f"[{sub_msg_id:02X}]子消息ID": TBOX_SUB_MESSAGE_NAMES.get(sub_msg_id, f"Unknown(0x{sub_msg_id:02X})"),
+            f"[{body[record_start + 3:record_start + 5].hex().upper()}]内容长度": content_len,
+        }
+
+        if len(body) - offset < content_len:
+            record["解析错误"] = f"内容长度声明 {content_len} 字节，实际剩余 {len(body) - offset} 字节。"
+            record["剩余内容HEX"] = hex_slice(body[offset:])
+            records.append(record)
+            break
+
+        content = body[offset:offset + content_len]
+        offset += content_len
+        record["内容HEX"] = hex_slice(content)
+
+        if sub_msg_id == 0x08:
+            record["终端设备属性对象"] = parse_tbox_json_content(content)
+        elif sub_msg_id == 0x24:
+            if content_len >= 1:
+                config_result = content[0]
+                record[f"[{config_result:02X}]配置结果"] = TBOX_CONFIG_RESULT_NAMES.get(
+                    config_result,
+                    f"Unknown({config_result})",
+                )
+            if content_len != 1:
+                record["解析提示"] = f"设置海外模式应答内容长度应为 1，当前为 {content_len}。"
+        elif sub_msg_id == 0x25:
+            if content_len >= 3:
+                overseas_mode = content[0]
+                country_code = int.from_bytes(content[1:3], "big")
+                record[f"[{overseas_mode:02X}]海外模式"] = describe_tbox_overseas_mode(overseas_mode)
+                record[f"[{content[1:3].hex().upper()}]国别编码"] = country_code
+            else:
+                record["解析错误"] = f"查询海外模式应答内容长度应为 3，当前为 {content_len}。"
+            if content_len != 3:
+                record["解析提示"] = f"查询海外模式应答内容长度固定为 3，当前为 {content_len}。"
+        else:
+            record["内容文本"] = decode_trimmed_text(content)
+            record["解析提示"] = "未知 TBOX 子消息，已保留原始内容。"
+
+        records.append(record)
+        index += 1
+
+    result["TBOX子消息数量"] = len(records)
+    result["TBOX子消息列表"] = records
+    return result
+
+
+def parse_0f3b_compressed_report(body):
+    result = {"压缩数据上报": hex_slice(body)}
+    if len(body) < 9:
+        result["解析提示"] = f"0F3B 消息体至少 9 字节固定头，当前为 {len(body)} 字节。"
+        return result
+
+    frequency = int.from_bytes(body[0:2], "big")
+    compress_flag = body[2]
+    reserved = body[3:7]
+    content_len = int.from_bytes(body[7:9], "big")
+    compress_flag_obj = parse_0f3b_compress_flag(compress_flag)
+    is_compressed = bool(compress_flag & 0x01)
+    result.update({
+        f"[{body[0:2].hex().upper()}]采集频率": f"{frequency} x 10ms",
+        f"[{body[0:2].hex().upper()}]采集周期": f"{frequency * 10}ms",
+        "压缩标志对象": compress_flag_obj,
+        f"[{hex_slice(reserved)}]保留字段": hex_slice(reserved),
+        f"[{body[7:9].hex().upper()}]内容长度": content_len,
+        "内容长度说明": "Zip压缩后长度" if is_compressed else "未压缩明文长度",
+    })
+
+    actual_len = len(body) - 9
+    if actual_len < content_len:
+        result["解析提示"] = f"内容长度声明 {content_len} 字节，实际剩余 {actual_len} 字节。"
+        return result
+
+    content = body[9:9 + content_len]
+    trailing = body[9 + content_len:]
+    result["内容数据HEX"] = hex_slice(content)
+    result["内容数据实际长度"] = len(content)
+    if trailing:
+        result["尾部多余数据"] = hex_slice(trailing)
+
+    if is_compressed:
+        result["压缩数据HEX"] = hex_slice(content)
+        try:
+            plain = zlib.decompress(content)
+        except zlib.error as exc:
+            result["解析错误"] = f"zlib 解压失败：{exc}"
+            return result
+        result["解压后HEX"] = hex_slice(plain)
+        result["解压后长度"] = len(plain)
+    else:
+        plain = content
+        result["明文HEX"] = hex_slice(plain)
+        result["明文长度"] = len(plain)
+        result["解压后长度"] = len(plain)
+
+    if len(plain) < 22:
+        result["解析提示"] = f"内容明文不足 22 字节，当前为 {len(plain)} 字节。"
+        return result
+
+    summary = {
+        f"[{hex_slice(plain[0:2])}]当日里程": format_f3b_summary_number(plain[0:2], 0.1, "km"),
+        f"[{hex_slice(plain[2:6])}]仪表总里程": format_f3b_summary_number(plain[2:6], 0.1, "km"),
+        f"[{hex_slice(plain[6:10])}]ECU总里程": format_f3b_summary_number(plain[6:10], 0.1, "km"),
+        f"[{hex_slice(plain[10:12])}]当日油耗": format_f3b_summary_number(plain[10:12], 0.1, "L"),
+        f"[{hex_slice(plain[12:16])}]仪表总油耗": format_f3b_summary_number(plain[12:16], 1, "L"),
+        f"[{hex_slice(plain[16:20])}]ECU总油耗": format_f3b_summary_number(plain[16:20], 1, "L"),
+        "内容行数": int.from_bytes(plain[20:22], "big"),
+    }
+    summary.update({
+        "当日里程(km)": summary[f"[{hex_slice(plain[0:2])}]当日里程"],
+        "仪表总里程(km)": summary[f"[{hex_slice(plain[2:6])}]仪表总里程"],
+        "ECU总里程(km)": summary[f"[{hex_slice(plain[6:10])}]ECU总里程"],
+        "当日油耗(L)": summary[f"[{hex_slice(plain[10:12])}]当日油耗"],
+        "仪表总油耗(L)": summary[f"[{hex_slice(plain[12:16])}]仪表总油耗"],
+        "ECU总油耗(L)": summary[f"[{hex_slice(plain[16:20])}]ECU总油耗"],
+    })
+    result["汇总对象"] = summary
+
+    csv_text = plain[22:].decode("utf-8", errors="replace").rstrip("\x00")
+    result["CSV明文"] = csv_text
+    csv_rows = list(csv.reader(csv_text.splitlines()))
+    if not csv_rows or not csv_rows[0]:
+        result["解析提示"] = "22 字节汇总字段之后未找到 CSV 表头。"
+        return result
+
+    headers = [item.strip() for item in csv_rows[0]]
+    details = []
+    for row_index, row in enumerate(csv_rows[1:], start=1):
+        raw_values = {}
+        parsed_values = {}
+        parsed_row = {
+            "CSV行号": row_index,
+            "字段原始值对象": raw_values,
+            "字段值对象": parsed_values,
+            "未知字段对象": {},
+        }
+        for column_index, code in enumerate(headers):
+            value = row[column_index].strip() if column_index < len(row) else ""
+            column_info = F3B_CSV_COLUMN_MAP.get(code)
+            if column_info:
+                parsed_value = format_f3b_csv_value(code, value, column_info["unit"])
+                raw_values[code] = value
+                parsed_values[code] = parsed_value
+                key = f"[{code}]{column_info['name']}"
+                if column_info["unit"]:
+                    key += f"({column_info['unit']})"
+                if code == "516097" and not is_invalid_ff_text(value):
+                    parsed_row[key] = format_f3b_switch_signal_object(value)
+                else:
+                    parsed_row[key] = parsed_value
+            else:
+                parsed_row["未知字段对象"][code] = value
+        if not parsed_row["未知字段对象"]:
+            parsed_row.pop("未知字段对象")
+        details.append(parsed_row)
+
+    result["CSV表头列表"] = headers
+    result["CSV明细列表"] = details
+    data_row_count = len(details)
+    declared = summary["内容行数"]
+    if declared and declared != data_row_count + 1:
+        result["解析提示"] = f"汇总字段声明内容行数 {declared}，实际 CSV 为 1 行表头 + {data_row_count} 行数据。"
     return result
 
 
@@ -1138,6 +1614,41 @@ def parse_phonebook_setting(body):
     return result
 
 
+def format_bcd_datetime_yyMMddHHmmss(data):
+    text = bytes_to_bcd(data)
+    if len(text) != 12:
+        return text
+    return f"20{text[0:2]}-{text[2:4]}-{text[4:6]} {text[6:8]}:{text[8:10]}:{text[10:12]}"
+
+
+def parse_platform_data_sync(body):
+    result = {"平台数据同步": hex_slice(body)}
+    if len(body) < 20:
+        result["解析提示"] = f"平台数据同步消息体固定长度为 20 字节，当前为 {len(body)} 字节。"
+        return result
+
+    offset = 0
+    time_raw, offset = read_bytes(body, offset, 6)
+    response_serial, offset = read_u16(body, offset)
+    gps_mileage_raw, offset = read_u32(body, offset)
+    integral_mileage_raw, offset = read_u32(body, offset)
+    integral_fuel_raw, offset = read_u32(body, offset)
+
+    result.update({
+        "方向": "平台下发",
+        "回复": "终端通用应答(0x0001)",
+        f"[{hex_slice(time_raw)}]时间": format_bcd_datetime_yyMMddHHmmss(time_raw),
+        f"[{body[6:8].hex().upper()}]响应序号": response_serial,
+        f"[{body[8:12].hex().upper()}]GPS里程(km)": format_number(gps_mileage_raw * 0.1, 1),
+        f"[{body[12:16].hex().upper()}]积分里程(km)": format_number(integral_mileage_raw * 0.1, 1),
+        f"[{body[16:20].hex().upper()}]积分油耗(mL)": integral_fuel_raw,
+    })
+    if len(body) > 20:
+        result["尾部多余数据"] = hex_slice(body[20:])
+        result["解析提示"] = f"平台数据同步消息体固定长度为 20 字节，当前为 {len(body)} 字节，尾部已保留。"
+    return result
+
+
 def parse_vehicle_control(body):
     result = {"车辆控制": hex_slice(body)}
     if len(body) < 1:
@@ -1386,6 +1897,10 @@ def parse_body(msg_id, body, protocol="2013"):
         else:
             result["解析提示"] = "缺少应答流水号。"
         return result
+    if msg_id == 0x0F3B:
+        return parse_0f3b_compressed_report(body)
+    if msg_id == 0x0F42:
+        return parse_0f42_tbox_info(body)
     if msg_id == 0x0301:
         if len(body) == 1:
             return {"事件报告": hex_slice(body), f"[{body[0]:02X}]事件ID": body[0]}
@@ -1428,6 +1943,8 @@ def parse_body(msg_id, body, protocol="2013"):
         return parse_query_specific_params(body)
     if msg_id == 0x8108:
         return parse_upgrade_package(body)
+    if msg_id == 0x8140:
+        return parse_platform_data_sync(body)
     if msg_id == 0x8202:
         return parse_temp_location_tracking(body)
     if msg_id == 0x8203:
@@ -1654,11 +2171,32 @@ def build_sheet1_row(index, raw_hex, protocol, parsed=None, error_text=""):
     ]
 
 
-def build_location_row(parsed):
+def default_location_pid_columns():
+    return (
+        [("normal", pid) for pid in LOCATION_EXTRA_PID_COLUMNS]
+        + [("e6", pid) for pid in LOCATION_E6_PID_COLUMNS]
+    )
+
+
+def ordered_location_pid_columns(normal_pids=None, e6_pids=None):
+    normal_pid_set = set(normal_pids or [])
+    e6_pid_set = set(e6_pids or [])
+
+    normal_columns = list(LOCATION_EXTRA_PID_COLUMNS)
+    normal_columns.extend(sorted(pid for pid in normal_pid_set if pid not in normal_columns))
+
+    e6_columns = sorted(set(LOCATION_E6_PID_COLUMNS) | e6_pid_set)
+    return [("normal", pid) for pid in normal_columns] + [("e6", pid) for pid in e6_columns]
+
+
+def build_location_row(parsed, location_pid_columns=None):
     body_obj = parsed.get("数据体对象", {})
     normal_pid_map, e6_pid_map = build_location_pid_maps(body_obj)
     status_obj = body_obj.get("状态对象", {})
-    return [
+    if location_pid_columns is None:
+        location_pid_columns = default_location_pid_columns()
+
+    row = [
         find_body_value_by_name(body_obj, "纬度"),
         find_body_value_by_name(body_obj, "经度"),
         find_body_value_by_name(body_obj, "高程(m)"),
@@ -1667,11 +2205,84 @@ def build_location_row(parsed):
         find_body_value_by_name(body_obj, "时间"),
         status_text_for_excel(status_obj, 0),
         status_text_for_excel(status_obj, 1),
-    ] + [
-        normal_pid_map.get(pid, "N/A") for pid in LOCATION_EXTRA_PID_COLUMNS
-    ] + [
-        e6_pid_map.get(pid, "N/A") for pid in LOCATION_E6_PID_COLUMNS
     ]
+    for source, pid in location_pid_columns:
+        value_map = e6_pid_map if source == "e6" else normal_pid_map
+        row.append(value_map.get(pid, "N/A"))
+    return row
+
+
+def format_0f3b_csv_header(code, name, unit):
+    suffix = f"({unit})" if unit else ""
+    return f"{code} {name}{suffix}"
+
+
+def f3b_sheet_headers():
+    fixed_headers = [
+        "序号", "消息ID", "消息名称", "解析标准", "手机号", "消息流水号",
+        "采集频率", "压缩标志", "保留字段", "压缩内容长度", "解压后长度",
+        "当日里程(km)", "仪表总里程(km)", "ECU总里程(km)",
+        "当日油耗(L)", "仪表总油耗(L)", "ECU总油耗(L)", "内容行数",
+        "CSV行号",
+    ]
+    dynamic_headers = [
+        format_0f3b_csv_header(code, name, unit)
+        for code, name, unit in F3B_CSV_COLUMNS
+    ]
+    return fixed_headers + dynamic_headers + ["其他CSV字段JSON"]
+
+
+def find_object_value_by_suffix(obj, suffix):
+    if not isinstance(obj, dict):
+        return ""
+    for key, value in obj.items():
+        if isinstance(key, str) and key.endswith(suffix):
+            return value
+    return ""
+
+
+def build_0f3b_rows(index, parsed, raw_hex, protocol):
+    msg_id = find_top_value_by_suffix(parsed, "消息Id")[1]
+    phone = find_top_value_by_suffix(parsed, "终端手机号")[1]
+    serial = find_top_value_by_suffix(parsed, "消息流水号")[1]
+    body_obj = parsed.get("数据体对象", {})
+    summary = body_obj.get("汇总对象", {}) if isinstance(body_obj, dict) else {}
+    detail_rows = body_obj.get("CSV明细列表", []) if isinstance(body_obj, dict) else []
+    if not detail_rows:
+        detail_rows = [{"CSV行号": "", "字段值对象": {}, "未知字段对象": {}}]
+
+    base = [
+        index,
+        f"0x{msg_id:04X}" if isinstance(msg_id, int) else "",
+        parsed.get("消息名称", ""),
+        parsed.get("解析标准", "JT/T 808-2019" if normalize_protocol(protocol) == "2019" else "JT/T 808-2013"),
+        phone,
+        serial,
+        find_object_value_by_suffix(body_obj, "采集频率"),
+        json.dumps(body_obj.get("压缩标志对象", {}), ensure_ascii=False, separators=(",", ":")),
+        find_object_value_by_suffix(body_obj, "保留字段"),
+        find_object_value_by_suffix(body_obj, "内容长度"),
+        body_obj.get("解压后长度", "") if isinstance(body_obj, dict) else "",
+        summary.get("当日里程(km)", ""),
+        summary.get("仪表总里程(km)", ""),
+        summary.get("ECU总里程(km)", ""),
+        summary.get("当日油耗(L)", ""),
+        summary.get("仪表总油耗(L)", ""),
+        summary.get("ECU总油耗(L)", ""),
+        summary.get("内容行数", ""),
+    ]
+
+    rows = []
+    for detail in detail_rows:
+        values = detail.get("字段值对象", {}) if isinstance(detail, dict) else {}
+        unknown = detail.get("未知字段对象", {}) if isinstance(detail, dict) else {}
+        rows.append(
+            base
+            + [detail.get("CSV行号", "") if isinstance(detail, dict) else ""]
+            + [values.get(code, "N/A") for code, _name, _unit in F3B_CSV_COLUMNS]
+            + [json.dumps(unknown, ensure_ascii=False, separators=(",", ":")) if unknown else ""]
+        )
+    return rows
 
 
 def autofit_worksheet(ws, max_width=80):
@@ -1699,46 +2310,117 @@ def format_pid_header(pid):
     return f"0x{pid:02X} {suffix}" if suffix else f"0x{pid:02X}"
 
 
-def batch_parse_zipsend_file(input_path, output_path, protocol="2013"):
+def format_pid_excel_header(pid):
+    return f"0x{pid:02X}"
+
+
+def ensure_location_pid_columns(ws, location_pid_columns, normal_pid_map, e6_pid_map, styles):
+    seen = set(location_pid_columns)
+    for source, pid_map in (("normal", normal_pid_map), ("e6", e6_pid_map)):
+        for pid in pid_map:
+            key = (source, pid)
+            if key in seen:
+                continue
+            location_pid_columns.append(key)
+            seen.add(key)
+
+            column_index = len(LOCATION_BASE_HEADERS) + len(location_pid_columns)
+            header_cell = ws.cell(row=1, column=column_index, value=format_pid_excel_header(pid))
+            header_cell.fill = styles["header_fill"]
+            header_cell.font = styles["header_font"]
+            header_cell.alignment = styles["header_alignment"]
+
+            for row_index in range(2, ws.max_row + 1):
+                cell = ws.cell(row=row_index, column=column_index, value="N/A")
+                cell.alignment = styles["wrap_alignment"]
+                if source == "e6":
+                    cell.fill = styles["e6_fill"]
+
+
+def apply_location_e6_fill(ws, row_index, location_pid_columns, e6_fill):
+    for offset, (source, _pid) in enumerate(location_pid_columns, start=len(LOCATION_BASE_HEADERS) + 1):
+        if source == "e6":
+            ws.cell(row=row_index, column=offset).fill = e6_fill
+
+
+def count_zipsend_frames(input_path):
+    total = 0
+    with open(input_path, "r", encoding="utf-8", errors="ignore") as file:
+        for line in file:
+            if extract_zipsend_hex(line):
+                total += 1
+    return total
+
+
+def report_batch_progress(progress_callback, stage, **payload):
+    if progress_callback:
+        progress_callback({"stage": stage, **payload})
+
+
+def batch_parse_zipsend_file(input_path, output_path, protocol="2013", progress_callback=None):
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Alignment, Font, PatternFill
     except ImportError as exc:
         raise ParseError("缺少 openpyxl 库，无法生成 Excel。请先安装 openpyxl。") from exc
 
+    report_batch_progress(progress_callback, "counting", current=0, total=0)
+    total_count = count_zipsend_frames(input_path)
+    report_batch_progress(progress_callback, "start", current=0, total=total_count)
+
     wb = Workbook()
     ws1 = wb.active
     ws1.title = "sheet1"
     ws2 = wb.create_sheet("location")
+    ws3 = wb.create_sheet("sheet3")
 
     sheet1_headers = [
         "序号", "消息头", "消息ID", "消息名称", "解析标准", "消息体属性", "数据加密",
         "手机号", "消息流水号", "消息体对象", "校验码", "消息尾", "完整HEX数据",
     ]
-    location_headers = (
-        ["纬度", "经度", "高度", "速度", "方向", "时间", "点火状态", "定位"]
-        + [format_pid_header(pid) for pid in LOCATION_EXTRA_PID_COLUMNS]
-        + [format_pid_header(pid) for pid in LOCATION_E6_PID_COLUMNS]
-    )
+    location_pid_columns = ordered_location_pid_columns()
+    location_headers = LOCATION_BASE_HEADERS + [format_pid_excel_header(pid) for _source, pid in location_pid_columns]
     ws1.append(sheet1_headers)
     ws2.append(location_headers)
+    sheet3_headers = f3b_sheet_headers()
+    ws3.append(sheet3_headers)
+    sheet3_csv_row_col = sheet3_headers.index("CSV行号") + 1
 
     header_fill = PatternFill("solid", fgColor="D9EAF7")
     error_fill = PatternFill("solid", fgColor="FFC7CE")
     e6_fill = PatternFill("solid", fgColor="DDEBF7")
+    csv_row_fill = PatternFill("solid", fgColor="FFE699")
+    f3b_block_fills = (
+        PatternFill("solid", fgColor="EAF3F8"),
+        PatternFill("solid", fgColor="FFF2CC"),
+    )
     header_font = Font(bold=True)
+    invalid_value_font = Font(color="C00000")
     wrap_alignment = Alignment(vertical="top", wrap_text=True)
+    excel_styles = {
+        "header_fill": header_fill,
+        "header_font": header_font,
+        "header_alignment": Alignment(horizontal="center", vertical="center"),
+        "wrap_alignment": wrap_alignment,
+        "e6_fill": e6_fill,
+    }
 
-    for ws in (ws1, ws2):
+    for ws in (ws1, ws2, ws3):
         for cell in ws[1]:
             cell.fill = header_fill
             cell.font = header_font
             cell.alignment = Alignment(horizontal="center", vertical="center")
         ws.freeze_panes = "A2"
+    ws3.cell(row=1, column=sheet3_csv_row_col).fill = csv_row_fill
 
     parsed_count = 0
     error_count = 0
     location_count = 0
+    f3b_count = 0
+    f3b_detail_count = 0
+    location_records = []
+    normal_location_pids = set()
+    e6_location_pids = set()
 
     with open(input_path, "r", encoding="utf-8", errors="ignore") as file:
         for line in file:
@@ -1756,15 +2438,21 @@ def batch_parse_zipsend_file(input_path, output_path, protocol="2013"):
                 row = build_sheet1_row(parsed_count, raw_hex, protocol, parsed=parsed)
                 msg_id = find_top_value_by_suffix(parsed, "消息Id")[1]
                 if msg_id == 0x0200:
-                    ws2.append(build_location_row(parsed))
-                    location_row_index = ws2.max_row
-                    e6_start_col = 8 + len(LOCATION_EXTRA_PID_COLUMNS) + 1
-                    e6_end_col = e6_start_col + len(LOCATION_E6_PID_COLUMNS) - 1
-                    for col_index in range(e6_start_col, e6_end_col + 1):
-                        cell = ws2.cell(row=location_row_index, column=col_index)
-                        if cell.value not in (None, ""):
-                            cell.fill = e6_fill
+                    body_obj = parsed.get("数据体对象", {})
+                    normal_pid_map, e6_pid_map = build_location_pid_maps(body_obj)
+                    normal_location_pids.update(normal_pid_map)
+                    e6_location_pids.update(e6_pid_map)
+                    location_records.append(parsed)
                     location_count += 1
+                elif msg_id == 0x0F3B:
+                    f3b_rows = build_0f3b_rows(parsed_count, parsed, raw_hex, protocol)
+                    block_fill = f3b_block_fills[f3b_count % len(f3b_block_fills)]
+                    for f3b_row in f3b_rows:
+                        ws3.append(f3b_row)
+                        for cell in ws3[ws3.max_row]:
+                            cell.fill = block_fill
+                        f3b_detail_count += 1
+                    f3b_count += 1
             except Exception as exc:
                 row_has_error = True
                 row = build_sheet1_row(parsed_count, raw_hex, protocol, error_text=str(exc))
@@ -1777,13 +2465,43 @@ def batch_parse_zipsend_file(input_path, output_path, protocol="2013"):
                     cell.fill = error_fill
             if row_has_error:
                 error_count += 1
+            report_batch_progress(
+                progress_callback,
+                "parsing",
+                current=parsed_count,
+                total=total_count,
+                error_count=error_count,
+                location_count=location_count,
+                f3b_count=f3b_count,
+                f3b_detail_count=f3b_detail_count,
+            )
 
-    for ws in (ws1, ws2):
+    location_pid_columns = ordered_location_pid_columns(normal_location_pids, e6_location_pids)
+    location_headers = LOCATION_BASE_HEADERS + [format_pid_excel_header(pid) for _source, pid in location_pid_columns]
+    for column_index, header in enumerate(location_headers, start=1):
+        cell = ws2.cell(row=1, column=column_index, value=header)
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center", vertical="center")
+    for parsed in location_records:
+        ws2.append(build_location_row(parsed, location_pid_columns))
+        apply_location_e6_fill(ws2, ws2.max_row, location_pid_columns, e6_fill)
+
+    report_batch_progress(progress_callback, "formatting", current=parsed_count, total=total_count)
+    for ws in (ws1, ws2, ws3):
         for row in ws.iter_rows(min_row=2):
             for cell in row:
                 cell.alignment = wrap_alignment
         autofit_worksheet(ws)
+    for row in ws3.iter_rows(min_row=2):
+        for cell in row:
+            if cell.column == sheet3_csv_row_col:
+                cell.fill = csv_row_fill
+            if is_invalid_ff_text(cell.value):
+                cell.font = invalid_value_font
+    ws3.column_dimensions["C"].width = 14
 
+    report_batch_progress(progress_callback, "saving", current=parsed_count, total=total_count)
     wb.save(output_path)
     return {
         "input_path": input_path,
@@ -1791,7 +2509,306 @@ def batch_parse_zipsend_file(input_path, output_path, protocol="2013"):
         "parsed_count": parsed_count,
         "error_count": error_count,
         "location_count": location_count,
+        "f3b_count": f3b_count,
+        "f3b_detail_count": f3b_detail_count,
     }
+
+
+def value_to_key_text(value):
+    if value is None or value == "":
+        return "N/A"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+    return str(value)
+
+
+def append_key_line(lines, label, value, indent=0):
+    lines.append(f"{'  ' * indent}{label}: {value_to_key_text(value)}")
+
+
+def find_body_raw_hex(body_obj):
+    if not isinstance(body_obj, dict):
+        return ""
+    for key, value in body_obj.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        if key in ("解析提示", "解析错误", "说明"):
+            continue
+        if re.fullmatch(r"[0-9A-Fa-f]*", value) and len(value) % 2 == 0:
+            return value.upper()
+    return ""
+
+
+def append_body_raw_hex(lines, body_obj, indent=0):
+    raw_hex = find_body_raw_hex(body_obj)
+    if raw_hex:
+        append_key_line(lines, "消息体原始HEX", raw_hex, indent)
+
+
+def append_f3b_detail_key_lines(lines, detail):
+    row_no = detail.get("CSV行号", "")
+    append_key_line(lines, "CSV行号", row_no, 1)
+    values = detail.get("字段值对象", {}) if isinstance(detail, dict) else {}
+    invalid_fields = []
+    for code, name, _unit in F3B_CSV_COLUMNS:
+        value = values.get(code, "")
+        if value in ("", None, "N/A"):
+            continue
+        label = f"{code} {name}"
+        text = value_to_key_text(value)
+        if value == "无效":
+            invalid_fields.append(label)
+        if code == "516097" and "\n" in text:
+            lines.append(f"  {label}:")
+            for item in text.splitlines():
+                lines.append(f"    {item}")
+        else:
+            append_key_line(lines, label, text, 1)
+    if invalid_fields:
+        lines.append("  无效字段:")
+        for label in invalid_fields:
+            lines.append(f"    {label}")
+
+
+def build_0f3b_key_info(lines, body_obj):
+    append_key_line(lines, "消息体", "压缩数据上报")
+    append_body_raw_hex(lines, body_obj)
+    append_key_line(lines, "采集频率", find_object_value_by_suffix(body_obj, "采集频率"))
+    append_key_line(lines, "采集周期", find_object_value_by_suffix(body_obj, "采集周期"))
+    flag_obj = body_obj.get("压缩标志对象", {})
+    if isinstance(flag_obj, dict):
+        for key, value in flag_obj.items():
+            append_key_line(lines, key, value)
+    append_key_line(lines, "内容长度", find_object_value_by_suffix(body_obj, "内容长度"))
+    append_key_line(lines, "内容长度说明", body_obj.get("内容长度说明", ""))
+    append_key_line(lines, "解压后长度", body_obj.get("解压后长度", ""))
+
+    summary = body_obj.get("汇总对象", {})
+    if isinstance(summary, dict):
+        lines.append("")
+        lines.append("汇总信息")
+        for key in (
+            "当日里程(km)", "仪表总里程(km)", "ECU总里程(km)",
+            "当日油耗(L)", "仪表总油耗(L)", "ECU总油耗(L)", "内容行数",
+        ):
+            append_key_line(lines, key, summary.get(key, "N/A"), 1)
+
+    details = body_obj.get("CSV明细列表", [])
+    if details:
+        lines.append("")
+        lines.append("CSV明细")
+        for detail in details:
+            append_f3b_detail_key_lines(lines, detail)
+            lines.append("")
+        if lines and lines[-1] == "":
+            lines.pop()
+
+
+def build_0f42_key_info(lines, body_obj):
+    append_key_line(lines, "消息体", "查询TBOX信息指令")
+    append_body_raw_hex(lines, body_obj)
+    records = body_obj.get("TBOX子消息列表", []) if isinstance(body_obj, dict) else []
+    append_key_line(lines, "TBOX子消息数量", len(records))
+    for record in records:
+        lines.append("")
+        append_key_line(lines, "子消息序号", record.get("序号", ""), 1)
+        sub_key, sub_name = find_top_value_by_suffix(record, "子消息ID")
+        serial_key, serial = find_top_value_by_suffix(record, "流水号")
+        len_key, content_len = find_top_value_by_suffix(record, "内容长度")
+        append_key_line(lines, "流水号", serial, 1)
+        append_key_line(lines, "子消息ID", f"{sub_key[:4]} {sub_name}" if sub_key else sub_name, 1)
+        append_key_line(lines, "内容长度", content_len, 1)
+        attr_obj = record.get("终端设备属性对象", {})
+        field_obj = attr_obj.get("字段对象", {}) if isinstance(attr_obj, dict) else {}
+        if field_obj:
+            for key, value in field_obj.items():
+                append_key_line(lines, key, value, 1)
+        elif "配置结果" in "".join(record.keys()):
+            result_key, result_value = find_top_value_by_suffix(record, "配置结果")
+            append_key_line(lines, "配置结果", result_value, 1)
+        elif "海外模式" in "".join(record.keys()):
+            mode_key, mode_value = find_top_value_by_suffix(record, "海外模式")
+            country_key, country_value = find_top_value_by_suffix(record, "国别编码")
+            append_key_line(lines, "海外模式", mode_value, 1)
+            append_key_line(lines, "国别编码", country_value, 1)
+
+
+def build_location_key_info(lines, body_obj):
+    append_key_line(lines, "消息体", "位置信息汇报")
+    append_body_raw_hex(lines, body_obj)
+    for name in ("纬度", "经度", "高程(m)", "速度(km/h)", "方向", "时间"):
+        append_key_line(lines, name, find_body_value_by_name(body_obj, name))
+    status_obj = body_obj.get("状态对象", {})
+    if isinstance(status_obj, dict):
+        append_key_line(lines, "点火状态", status_text_for_excel(status_obj, 0))
+        append_key_line(lines, "定位", status_text_for_excel(status_obj, 1))
+
+    extra_obj = body_obj.get("附加信息对象", {}) if isinstance(body_obj, dict) else {}
+    items = extra_obj.get("附加信息列表", []) if isinstance(extra_obj, dict) else []
+    normal_items = []
+    e6_items = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = find_top_value_by_suffix(item, "附加信息ID")[1]
+        if item_id == 0xE6:
+            e6_items.append(item)
+        else:
+            normal_items.append(item)
+
+    if normal_items:
+        lines.append("")
+        lines.append("附加信息")
+        for item in normal_items:
+            item_id = find_top_value_by_suffix(item, "附加信息ID")[1]
+            value = item.get("单元格值", item.get("原始值", "N/A"))
+            append_key_line(lines, format_pid_header(item_id) if isinstance(item_id, int) else "未知附加信息", value, 1)
+
+    if e6_items:
+        lines.append("")
+        lines.append("E6私有协议")
+        for item in e6_items:
+            e6_obj = item.get("E6私有协议对象", {})
+            klv_items = e6_obj.get("KLV列表", []) if isinstance(e6_obj, dict) else []
+            append_key_line(lines, "E6 KLV数量", len(klv_items), 1)
+            for klv_item in klv_items:
+                if not isinstance(klv_item, dict):
+                    continue
+                pid = find_top_value_by_suffix(klv_item, "PID")[1]
+                pid_text = f"0x{pid:02X}" if isinstance(pid, int) and pid <= 0xFF else f"0x{pid:04X}" if isinstance(pid, int) else "Unknown"
+                desc = klv_item.get("字段描述", "")
+                value = klv_item.get("单元格值", klv_item.get("解析值", "N/A"))
+                label = f"{pid_text} {desc}".strip()
+                append_key_line(lines, label, value, 1)
+
+
+def build_generic_body_key_info(lines, body_obj):
+    if not isinstance(body_obj, dict):
+        append_key_line(lines, "消息体", body_obj)
+        return
+    append_body_raw_hex(lines, body_obj)
+    for key, value in body_obj.items():
+        if isinstance(value, (dict, list)):
+            continue
+        if isinstance(key, str) and any(marker in key for marker in ("原始", "HEX")):
+            continue
+        append_key_line(lines, key, value)
+
+
+def build_key_info_for_frame(parsed):
+    lines = []
+    msg_id_key, msg_id = find_top_value_by_suffix(parsed, "消息Id")
+    phone_key, phone = find_top_value_by_suffix(parsed, "终端手机号")
+    serial_key, serial = find_top_value_by_suffix(parsed, "消息流水号")
+    msg_id_text = f"0x{msg_id:04X}" if isinstance(msg_id, int) else value_to_key_text(msg_id)
+
+    append_key_line(lines, "消息ID", msg_id_text)
+    append_key_line(lines, "消息名称", parsed.get("消息名称", ""))
+    append_key_line(lines, "解析标准", parsed.get("解析标准", ""))
+    append_key_line(lines, "手机号", phone)
+    append_key_line(lines, "消息流水号", serial)
+
+    prop_obj = parsed.get("消息体属性对象", {})
+    if isinstance(prop_obj, dict):
+        append_key_line(lines, "消息体属性HEX", find_object_value_by_suffix(prop_obj, "消息体属性HEX"))
+        append_key_line(lines, "消息体属性二进制", find_object_value_by_suffix(prop_obj, "消息体属性二进制"))
+        append_key_line(lines, "数据加密", prop_obj.get("[bit10~bit12]数据加密", ""))
+        append_key_line(lines, "消息体长度", prop_obj.get("[bit0~bit9]消息体长度", ""))
+
+    body_obj = parsed.get("数据体对象", {})
+    lines.append("")
+    if msg_id == 0x0F3B and isinstance(body_obj, dict):
+        build_0f3b_key_info(lines, body_obj)
+    elif msg_id == 0x0F42 and isinstance(body_obj, dict):
+        build_0f42_key_info(lines, body_obj)
+    elif msg_id == 0x0200 and isinstance(body_obj, dict):
+        build_location_key_info(lines, body_obj)
+    else:
+        build_generic_body_key_info(lines, body_obj)
+
+    checksum_obj = parsed.get("校验结果对象", {})
+    if isinstance(checksum_obj, dict):
+        lines.append("")
+        append_key_line(lines, "校验结果", "通过" if checksum_obj.get("是否通过") else "不通过")
+
+    return "\n".join(lines).strip()
+
+
+def build_key_info(parsed):
+    if "解析结果列表" not in parsed:
+        return build_key_info_for_frame(parsed)
+    lines = [
+        f"帧数量: {parsed.get('帧数量', 0)}",
+        "",
+    ]
+    for index, frame in enumerate(parsed.get("解析结果列表", []), start=1):
+        lines.append(f"第 {index} 帧")
+        lines.append(build_key_info_for_frame(frame))
+        lines.append("")
+    return "\n".join(lines).strip()
+
+
+class BatchProgressDialog:
+    def __init__(self, parent):
+        self.window = tk.Toplevel(parent)
+        self.window.title("批量解析进度")
+        self.window.resizable(False, False)
+        self.window.transient(parent)
+        self.window.protocol("WM_DELETE_WINDOW", self.ignore_close)
+
+        frame = ttk.Frame(self.window, padding=18)
+        frame.pack(fill=tk.BOTH, expand=True)
+
+        self.status_var = tk.StringVar(value="正在准备批量解析...")
+        self.detail_var = tk.StringVar(value="")
+        ttk.Label(frame, textvariable=self.status_var, width=46).pack(fill=tk.X)
+        self.progress = ttk.Progressbar(frame, mode="indeterminate", length=360)
+        self.progress.pack(fill=tk.X, pady=(12, 8))
+        ttk.Label(frame, textvariable=self.detail_var).pack(fill=tk.X)
+
+        self.progress.start(12)
+        self.center_on_parent(parent)
+
+    def center_on_parent(self, parent):
+        self.window.update_idletasks()
+        parent.update_idletasks()
+        width = self.window.winfo_width()
+        height = self.window.winfo_height()
+        x = parent.winfo_rootx() + max(0, (parent.winfo_width() - width) // 2)
+        y = parent.winfo_rooty() + max(0, (parent.winfo_height() - height) // 2)
+        self.window.geometry(f"+{x}+{y}")
+
+    def ignore_close(self):
+        self.status_var.set("正在解析中，请等待完成...")
+
+    def set_counting(self):
+        self.status_var.set("正在扫描文件，统计 AT+ZIPSEND 数据...")
+        self.detail_var.set("")
+        self.progress.configure(mode="indeterminate")
+        self.progress.start(12)
+
+    def set_progress(self, current, total, detail=""):
+        total = max(int(total or 0), 1)
+        current = min(int(current or 0), total)
+        if str(self.progress.cget("mode")) != "determinate":
+            self.progress.stop()
+            self.progress.configure(mode="determinate", maximum=total)
+        self.progress.configure(maximum=total, value=current)
+        percent = current * 100 / total if total else 0
+        self.status_var.set(f"正在解析：{current}/{total}（{percent:.1f}%）")
+        self.detail_var.set(detail)
+
+    def set_status(self, text):
+        self.status_var.set(text)
+
+    def close(self):
+        try:
+            self.progress.stop()
+            self.window.destroy()
+        except tk.TclError:
+            pass
 
 
 class JT808ParserApp:
@@ -1800,8 +2817,9 @@ class JT808ParserApp:
         self.root.title("GT117-YK-808 标准808协议解析工具-Mangetic-260804")
         self.root.geometry("1060x720")
         self.root.minsize(860, 560)
+        self.auto_parse_job = None
+        self.batch_parse_running = False
         self._build_ui()
-        self.load_sample()
 
     def _build_ui(self):
         style = ttk.Style()
@@ -1828,42 +2846,180 @@ class JT808ParserApp:
         self.protocol_combo.pack(side=tk.LEFT, padx=(0, 8))
         self.protocol_combo.bind("<<ComboboxSelected>>", lambda _event: self.parse_input())
 
-        ttk.Button(toolbar, text="解析", command=self.parse_input).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(toolbar, text="示例", command=self.load_sample).pack(side=tk.LEFT, padx=(0, 8))
+        self.batch_button = ttk.Button(toolbar, text="批量解析EXCEL", command=self.batch_parse_file)
+        self.batch_button.pack(side=tk.LEFT, padx=(0, 8))
         ttk.Button(toolbar, text="清空输入", command=self.clear_input).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(toolbar, text="复制结果", command=self.copy_output).pack(side=tk.LEFT, padx=(0, 8))
-        ttk.Button(toolbar, text="批量解析文件", command=self.batch_parse_file).pack(side=tk.LEFT, padx=(0, 8))
 
-        self.status_var = tk.StringVar(value="请粘贴 808 协议 HEX 数据，工具会自动去掉回车、换行、空格后解析。")
+        self.status_var = tk.StringVar(value="请在上方输入 808 协议 HEX 数据，输入后会自动解析。")
         ttk.Label(toolbar, textvariable=self.status_var).pack(side=tk.LEFT, padx=(8, 0))
+
+        input_frame = ttk.LabelFrame(main, text="输入 HEX")
+        input_frame.pack(fill=tk.X, pady=(0, 8))
+
+        self.input_text = scrolledtext.ScrolledText(input_frame, wrap=tk.WORD, font=("Consolas", 11), undo=True, height=6)
+        self.input_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.input_text.bind("<<Modified>>", self.on_input_modified)
+        self.input_text.edit_modified(False)
+        self.bind_text_shortcuts(self.input_text, allow_edit=True)
 
         panes = ttk.Panedwindow(main, orient=tk.HORIZONTAL)
         panes.pack(fill=tk.BOTH, expand=True)
 
-        input_frame = ttk.LabelFrame(panes, text="输入 HEX")
         output_frame = ttk.LabelFrame(panes, text="解析结果 JSON")
-        panes.add(input_frame, weight=1)
+        key_output_frame = ttk.LabelFrame(panes, text="解析结果 JSON-关键信息")
         panes.add(output_frame, weight=1)
-
-        self.input_text = scrolledtext.ScrolledText(input_frame, wrap=tk.WORD, font=("Consolas", 11), undo=True)
-        self.input_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        panes.add(key_output_frame, weight=1)
 
         self.output_text = scrolledtext.ScrolledText(output_frame, wrap=tk.WORD, font=("Consolas", 10), undo=True)
         self.output_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
         self.output_text.tag_configure("error", foreground="#B00020", font=("Consolas", 10, "bold"))
+        self.output_text.tag_configure("invalid", foreground="#B00020", font=("Consolas", 10, "bold"))
         self.output_text.tag_configure("hint", foreground="#7A4A00", font=("Consolas", 10))
+        self.output_text.tag_configure("key", foreground="#1F5AA6", font=("Consolas", 10))
+        self.bind_text_shortcuts(self.output_text, allow_edit=False)
 
-    def show_output(self, content):
-        self.output_text.delete("1.0", tk.END)
+        self.key_output_text = scrolledtext.ScrolledText(key_output_frame, wrap=tk.WORD, font=("Consolas", 10), undo=True)
+        self.key_output_text.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+        self.key_output_text.tag_configure("error", foreground="#B00020", font=("Consolas", 10, "bold"))
+        self.key_output_text.tag_configure("invalid", foreground="#B00020", font=("Consolas", 10, "bold"))
+        self.key_output_text.tag_configure("hint", foreground="#7A4A00", font=("Consolas", 10))
+        self.key_output_text.tag_configure("key", foreground="#1F5AA6", font=("Consolas", 10))
+        self.bind_text_shortcuts(self.key_output_text, allow_edit=False)
+
+    def bind_text_shortcuts(self, widget, allow_edit=True):
+        widget.bind("<Control-a>", lambda _event, current=widget: self.text_select_all(current))
+        widget.bind("<Control-A>", lambda _event, current=widget: self.text_select_all(current))
+        widget.bind("<Control-c>", lambda _event, current=widget: self.text_copy(current))
+        widget.bind("<Control-C>", lambda _event, current=widget: self.text_copy(current))
+        if allow_edit:
+            widget.bind("<Control-x>", lambda _event, current=widget: self.text_cut(current))
+            widget.bind("<Control-X>", lambda _event, current=widget: self.text_cut(current))
+            widget.bind("<Control-v>", lambda _event, current=widget: self.text_paste(current))
+            widget.bind("<Control-V>", lambda _event, current=widget: self.text_paste(current))
+        widget.bind("<Button-3>", lambda event, current=widget, editable=allow_edit: self.show_text_menu(event, current, editable))
+
+    def text_select_all(self, widget):
+        widget.tag_add(tk.SEL, "1.0", tk.END)
+        widget.mark_set(tk.INSERT, "1.0")
+        widget.see(tk.INSERT)
+        return "break"
+
+    def text_copy(self, widget):
+        try:
+            selected = widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            return "break"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(selected)
+        return "break"
+
+    def text_cut(self, widget):
+        try:
+            selected = widget.get(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            return "break"
+        self.root.clipboard_clear()
+        self.root.clipboard_append(selected)
+        widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        widget.edit_modified(True)
+        return "break"
+
+    def text_paste(self, widget):
+        try:
+            text = self.root.clipboard_get()
+        except tk.TclError:
+            return "break"
+        try:
+            widget.delete(tk.SEL_FIRST, tk.SEL_LAST)
+        except tk.TclError:
+            pass
+        widget.insert(tk.INSERT, text)
+        widget.edit_modified(True)
+        return "break"
+
+    def show_text_menu(self, event, widget, allow_edit=True):
+        menu = tk.Menu(self.root, tearoff=False)
+        menu.add_command(label="复制", command=lambda: self.text_copy(widget))
+        if allow_edit:
+            menu.add_command(label="剪切", command=lambda: self.text_cut(widget))
+            menu.add_command(label="粘贴", command=lambda: self.text_paste(widget))
+        menu.add_separator()
+        menu.add_command(label="全选", command=lambda: self.text_select_all(widget))
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def is_key_line(self, line):
+        key_markers = (
+            "消息名称",
+            "消息体原始HEX",
+            "解析标准",
+            "消息体属性对象",
+            "终端手机号",
+            "消息流水号",
+            "数据体对象",
+            "校验结果对象",
+            "压缩标志对象",
+            "汇总对象",
+            "字段原始值对象",
+            "字段值对象",
+            "终端设备属性对象",
+            "TBOX子消息列表",
+            "TBOX子消息数量",
+            "JSON文本",
+            "JSON对象",
+            "字段对象",
+            "内容HEX",
+            "压缩数据HEX",
+            "解压后HEX",
+            "CSV明文",
+            "CSV行号",
+            "无效字段",
+        )
+        if any(marker in line for marker in key_markers):
+            return True
+        return bool(re.search(r'^\s*"\[[0-9A-Fa-f]+\][^"]+":', line))
+
+    def is_invalid_line(self, line):
+        stripped = line.strip().rstrip(",")
+        if "无效字段" in stripped:
+            return True
+        return bool(re.search(r':\s*"?无效"?$', stripped))
+
+    def show_text(self, widget, content):
+        widget.delete("1.0", tk.END)
         error_keywords = ("解析失败", "未知错误", "解析错误", "解析提示", "数据长度不足", "无法匹配", "非法", "不足")
         warning_keywords = ("尝试记录", "建议")
+        invalid_block = False
         for line in content.splitlines(True):
+            stripped = line.strip()
+            if not stripped:
+                invalid_block = False
+            if "无效字段" in stripped:
+                invalid_block = True
+
             if any(keyword in line for keyword in error_keywords):
-                self.output_text.insert(tk.END, line, "error")
+                widget.insert(tk.END, line, "error")
+            elif invalid_block or self.is_invalid_line(line):
+                widget.insert(tk.END, line, "invalid")
             elif any(keyword in line for keyword in warning_keywords):
-                self.output_text.insert(tk.END, line, "hint")
+                widget.insert(tk.END, line, "hint")
+            elif self.is_key_line(line):
+                widget.insert(tk.END, line, "key")
             else:
-                self.output_text.insert(tk.END, line)
+                widget.insert(tk.END, line)
+
+    def show_output(self, content):
+        self.show_text(self.output_text, content)
+
+    def show_key_output(self, content):
+        self.show_text(self.key_output_text, content)
+
+    def on_input_modified(self, _event=None):
+        if not self.input_text.edit_modified():
+            return
+        self.input_text.edit_modified(False)
+        if self.auto_parse_job is not None:
+            self.root.after_cancel(self.auto_parse_job)
+        self.auto_parse_job = self.root.after(350, self.parse_input)
 
     def load_sample(self):
         self.input_text.delete("1.0", tk.END)
@@ -1871,29 +3027,44 @@ class JT808ParserApp:
         self.parse_input()
 
     def clear_input(self):
+        if self.auto_parse_job is not None:
+            self.root.after_cancel(self.auto_parse_job)
+            self.auto_parse_job = None
         self.input_text.delete("1.0", tk.END)
+        self.input_text.edit_modified(False)
         self.output_text.delete("1.0", tk.END)
+        self.key_output_text.delete("1.0", tk.END)
         self.status_var.set("已清空。")
 
     def parse_input(self):
+        self.auto_parse_job = None
         source = self.input_text.get("1.0", tk.END)
+        if not clean_hex_text(source):
+            self.output_text.delete("1.0", tk.END)
+            self.key_output_text.delete("1.0", tk.END)
+            self.status_var.set("请在上方输入 808 协议 HEX 数据，输入后会自动解析。")
+            return
         try:
             result = parse_808_hex(source, self.protocol_var.get())
             formatted = json.dumps(result, ensure_ascii=False, indent=2)
             self.show_output(formatted)
+            self.show_key_output(build_key_info(result))
             if "解析提示" in formatted or "解析错误" in formatted or "数据长度不足" in formatted:
                 self.status_var.set(f"解析完成，但存在红色提示；当前标准：{self.protocol_var.get()}。")
             else:
                 self.status_var.set(f"解析完成，当前标准：{self.protocol_var.get()}。")
         except ParseError as exc:
-            self.show_output(
+            error_text = (
                 f"解析失败：{exc}\n\n"
                 f"当前选择标准：{self.protocol_var.get()}\n"
                 "建议：如果该帧在另一个标准下能够解析，请切换顶部“协议标准”后重新解析。"
             )
+            self.show_output(error_text)
+            self.show_key_output(f"解析失败：{exc}")
             self.status_var.set("解析失败。")
         except Exception as exc:
             self.show_output(f"未知错误：{exc}")
+            self.show_key_output(f"未知错误：{exc}")
             self.status_var.set("解析失败。")
 
     def copy_output(self):
@@ -1906,6 +3077,10 @@ class JT808ParserApp:
         self.status_var.set("解析结果已复制到剪贴板。")
 
     def batch_parse_file(self):
+        if self.batch_parse_running:
+            messagebox.showinfo("提示", "批量解析正在进行中，请等待完成。")
+            return
+
         input_path = filedialog.askopenfilename(
             title="选择包含 AT+ZIPSEND 的日志文件",
             filetypes=[
@@ -1928,33 +3103,105 @@ class JT808ParserApp:
         if not output_path:
             return
 
+        protocol = self.protocol_var.get()
+        progress_dialog = BatchProgressDialog(self.root)
+        progress_queue = queue.Queue()
+        self.batch_parse_running = True
+        self.batch_button.state(["disabled"])
+        self.status_var.set("正在批量解析文件，请稍等...")
+
+        def progress_callback(payload):
+            progress_queue.put(("progress", payload))
+
+        def worker():
+            try:
+                summary = batch_parse_zipsend_file(input_path, output_path, protocol, progress_callback=progress_callback)
+                progress_queue.put(("done", summary))
+            except Exception as exc:
+                progress_queue.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+        self.poll_batch_parse_queue(progress_queue, progress_dialog, protocol)
+
+    def update_batch_progress_dialog(self, progress_dialog, payload):
+        stage = payload.get("stage")
+        if stage == "counting":
+            progress_dialog.set_counting()
+            return
+
+        current = payload.get("current", 0)
+        total = payload.get("total", 0)
+        if stage == "start" and not total:
+            progress_dialog.set_status("未找到 AT+ZIPSEND 数据，正在生成空 Excel...")
+            return
+        if stage == "formatting":
+            progress_dialog.set_status("正在整理 Excel 格式...")
+            return
+        if stage == "saving":
+            progress_dialog.set_status("正在保存 Excel 文件...")
+            return
+
+        detail = (
+            f"错误 {payload.get('error_count', 0)} 条，"
+            f"0200位置 {payload.get('location_count', 0)} 条，"
+            f"0F3B {payload.get('f3b_count', 0)} 条"
+        )
+        progress_dialog.set_progress(current, total, detail)
+
+    def finish_batch_parse(self, progress_dialog):
+        self.batch_parse_running = False
+        self.batch_button.state(["!disabled"])
+        progress_dialog.close()
+
+    def show_batch_parse_success(self, summary, protocol):
+        self.status_var.set(
+            f"批量解析完成：{summary['parsed_count']} 条，错误 {summary['error_count']} 条，"
+            f"0200位置 {summary['location_count']} 条，0F3B {summary['f3b_count']} 条。"
+        )
+        summary_text = (
+            "批量解析完成\n"
+            f"当前标准：{protocol}\n"
+            f"输入文件：{summary['input_path']}\n"
+            f"输出文件：{summary['output_path']}\n"
+            f"解析条数：{summary['parsed_count']}\n"
+            f"错误条数：{summary['error_count']}\n"
+            f"0200位置条数：{summary['location_count']}\n"
+            f"0F3B条数：{summary['f3b_count']}\n"
+            f"sheet3明细行数：{summary['f3b_detail_count']}"
+        )
+        self.show_output(summary_text)
+        self.show_key_output(summary_text)
+        messagebox.showinfo(
+            "批量解析完成",
+            f"已生成 Excel：\n{summary['output_path']}\n\n"
+            f"解析条数：{summary['parsed_count']}\n"
+            f"错误条数：{summary['error_count']}\n"
+            f"0200位置条数：{summary['location_count']}\n"
+            f"0F3B条数：{summary['f3b_count']}\n"
+            f"sheet3明细行数：{summary['f3b_detail_count']}",
+        )
+
+    def poll_batch_parse_queue(self, progress_queue, progress_dialog, protocol):
         try:
-            self.status_var.set("正在批量解析文件，请稍等...")
-            self.root.update_idletasks()
-            summary = batch_parse_zipsend_file(input_path, output_path, self.protocol_var.get())
-            self.status_var.set(
-                f"批量解析完成：{summary['parsed_count']} 条，错误 {summary['error_count']} 条，0200位置 {summary['location_count']} 条。"
-            )
-            self.show_output(
-                "批量解析完成\n"
-                f"当前标准：{self.protocol_var.get()}\n"
-                f"输入文件：{summary['input_path']}\n"
-                f"输出文件：{summary['output_path']}\n"
-                f"解析条数：{summary['parsed_count']}\n"
-                f"错误条数：{summary['error_count']}\n"
-                f"0200位置条数：{summary['location_count']}"
-            )
-            messagebox.showinfo(
-                "批量解析完成",
-                f"已生成 Excel：\n{summary['output_path']}\n\n"
-                f"解析条数：{summary['parsed_count']}\n"
-                f"错误条数：{summary['error_count']}\n"
-                f"0200位置条数：{summary['location_count']}",
-            )
-        except Exception as exc:
-            self.show_output(f"解析失败：{exc}")
-            self.status_var.set("批量解析失败。")
-            messagebox.showerror("批量解析失败", str(exc))
+            while True:
+                kind, payload = progress_queue.get_nowait()
+                if kind == "progress":
+                    self.update_batch_progress_dialog(progress_dialog, payload)
+                elif kind == "done":
+                    self.finish_batch_parse(progress_dialog)
+                    self.show_batch_parse_success(payload, protocol)
+                    return
+                elif kind == "error":
+                    self.finish_batch_parse(progress_dialog)
+                    self.show_output(f"解析失败：{payload}")
+                    self.show_key_output(f"解析失败：{payload}")
+                    self.status_var.set("批量解析失败。")
+                    messagebox.showerror("批量解析失败", payload)
+                    return
+        except queue.Empty:
+            pass
+
+        self.root.after(100, lambda: self.poll_batch_parse_queue(progress_queue, progress_dialog, protocol))
 
 
 def main():
@@ -1964,22 +3211,5 @@ def main():
     return app
 
 
-def check_user_permission():
-    allowed_users = {"G1006871", "G1007886", "G1008939", "L1000475"}
-    current_user = (
-        os.environ.get("USERNAME")
-        or os.environ.get("USER")
-        or getpass.getuser()
-    )
-    if current_user not in allowed_users:
-        root = tk.Tk()
-        root.withdraw()
-        messagebox.showerror("提示", "啊啊啊啊啊，不给你用")
-        root.destroy()
-        return False
-    return True
-
-
 if __name__ == "__main__":
-    if check_user_permission():
-        main()
+    main()

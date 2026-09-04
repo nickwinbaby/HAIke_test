@@ -1,4 +1,7 @@
 {
   "voltage": 11.52,
-  "current": 1.993
+  "current": 1.993,
+  "chart_y_step": 0.001,
+  "chart_line_style": "平滑",
+  "chart_line_color": "#ff0000"
 }
