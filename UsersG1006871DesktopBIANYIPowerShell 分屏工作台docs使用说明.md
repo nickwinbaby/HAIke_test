@@ -1,0 +1,68 @@
+# powershell 分屏工作台 V1.3.0 使用说明
+
+## 快速开始
+
+1. 选择 2–6 个窗口和布局。
+2. 按预览编号填写工作目录；留空使用所选终端的默认目录。
+3. 一般使用标准模式，需要一次提交时使用快速模式。
+4. 选择终端程序，并按需填写“启动后执行命令”。
+5. 点击“预览命令”检查，或点击“启动分屏”。
+
+所有模式都会新建独立 Windows Terminal 窗口，不复用最近窗口或编号窗口。启动后可使用 Alt+Shift+方向键调整 pane 大小。
+
+## 启动模式
+
+快速模式将完整布局作为一个 Windows Terminal 命令一次性提交。
+
+标准模式使用唯一 PSSW 窗口目标分步骤创建布局。第一步后等待 750 ms，后续步骤间等待 500 ms。每个 WT 步骤最多等待 7 秒；超时会停止后续步骤并显示错误。
+
+## 终端程序
+
+- PowerShell：填写 powershell.exe 或 pwsh.exe，命令可填写 dir。
+- Python：填写完整路径或包含 python.exe 的目录，命令可填写 print(123)。
+- Git Bash：程序根据 PATH、git.exe 和常见目录自动查找 binash.exe，命令可填写 pwd。
+- CMD：填写 cmd.exe，命令可填写 dir。
+- ADB：选择 adb.exe，命令可填写 shell 或 -s DEVICE_SERIAL shell。
+
+不要选择通常会另开 mintty 窗口的 git-bash.exe。
+
+## 日志
+
+只有 Windows PowerShell 和 PowerShell 7 当前启用日志，使用原生 Start-Transcript。日志保存在 EXE 同目录的“窗口运行日志”中。
+
+Python、CMD、Git Bash、WSL、ADB 等终端为了保证交互和布局稳定，当前不经过日志代理。选择这些终端时，日志复选框自动禁用并显示“运行日志（当前终端不支持）”；切回 PowerShell 后恢复此前的勾选偏好。
+
+## 工作区方案
+
+方案保存窗口数量、布局、启动模式、终端程序、启动后执行命令、wt.exe 路径、日志偏好、关闭选项和各窗口目录。V1.3.0 不再保存或读取“打开方式”。
+
+## 清理本工具进程
+
+程序先显示匹配数量并要求确认，然后结束每个进程树并最多等待 3 秒确认退出。
+
+- 成功：根进程及已识别子进程均不再运行。
+- 失败：至少一个进程仍存在，可能需要管理员权限或手动处理。
+
+失败项不会再计入成功数量。
+
+## 安装 Windows Terminal
+
+点击“安装 WT”后，主程序将内置的 Microsoft 签名安装器释放到：
+
+%LOCALAPPDATA%PowerShellSplitWorkbench安装程序Windows Terminal Installer.exe
+
+SHA-256 校验通过后才询问是否运行。
+
+## 自动检测与自测
+
+正式运行时，Git Bash 根据 PATH、git.exe 和常见目录自动检测；Python 安装目录根据其中的 python.exe 自动解析；其他程序可通过“选择程序”指定。
+
+self-test 不再依赖 D:Python310 或固定 Git 路径。测试在临时目录创建模拟文件，只验证路径选择和命令生成逻辑，并在结束后自动清理。自测还验证 WT 超时和进程树清理结果。
+
+## 编译
+
+PowerShell：& ".sourceuild_terminal_split.ps1"
+
+CMD：build.bat
+
+成品输出为 distpowershell 分屏工作台 V1.3.0 - Mangetic - 2026-9-11.exe。

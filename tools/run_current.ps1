@@ -22,42 +22,9 @@ switch ($ext) {
         exit $LASTEXITCODE
     }
 
-    ".cpp" {
-        $dir = Split-Path -LiteralPath $File -Parent
-        $buildBat = Join-Path $dir "build_msvc.bat"
-
-        if (-not (Test-Path -LiteralPath $buildBat)) {
-            Write-Host "No build_msvc.bat found in: $dir"
-            Write-Host "This auto-run task currently supports the relay C++ folder."
-            exit 1
-        }
-
-        Push-Location $dir
-        try {
-            Write-Host "Build C++: $File"
-            & cmd /c build_msvc.bat
-            if ($LASTEXITCODE -ne 0) {
-                exit $LASTEXITCODE
-            }
-
-            $exe = Join-Path $dir "RelayUsbTest.exe"
-            if (Test-Path -LiteralPath $exe) {
-                Write-Host "Run C++ exe: $exe"
-                & $exe
-                exit $LASTEXITCODE
-            }
-
-            Write-Host "Build succeeded, but exe not found: $exe"
-            exit 1
-        }
-        finally {
-            Pop-Location
-        }
-    }
-
     default {
         Write-Host "Unsupported file type: $ext"
-        Write-Host "Supported: .py, .cpp"
+        Write-Host "Supported: .py"
         exit 1
     }
 }

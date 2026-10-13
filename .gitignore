@@ -15,6 +15,7 @@ env/
 # Build outputs
 build/
 dist/
+bulid_photos/
 *.egg-info/
 
 # Logs and temporary files
@@ -45,3 +46,11 @@ results/
 .robotcode_cache/
 current_curve_logs/
 current/_curve/_logs/
+
+# Local temporary dependencies and tool environments
+.codex_tmp/
+.downloads/
+.w64devkit/
+.python313/
+.pycdc-src/
+.pycdc-build/

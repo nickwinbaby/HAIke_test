@@ -17,12 +17,19 @@ import csv
 import zlib
 import queue
 import threading
+import sys
 import tkinter as tk
 from datetime import datetime
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 
 SAMPLE_HEX = "7E00010005115436621650000220D1814000617E"
+ICON_FILENAME = "_GT117-YK-808-icon-preview.ico"
+
+
+def resource_path(filename):
+    base_path = getattr(sys, "_MEIPASS", os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base_path, filename)
 
 MESSAGE_ID_NAMES = {
     0x0001: "终端通用应答",
@@ -696,6 +703,23 @@ LOCATION_EXTRA_PID_COLUMNS = [0x01, 0x02, 0x07, 0x2A, 0x2B, 0x30, 0x31]
 LOCATION_E6_PID_COLUMNS = [0x08, 0x14, 0x15]
 LOCATION_BASE_HEADERS = ["纬度", "经度", "高度", "速度", "方向", "时间", "点火状态", "定位"]
 
+LOCATION_TYPE_NAMES = {
+    1: "圆形区域",
+    2: "矩形区域",
+    3: "多边形区域",
+    4: "路线",
+}
+
+LOCATION_ENTER_EXIT_NAMES = {
+    0: "进",
+    1: "出",
+}
+
+ROUTE_TIME_RESULT_NAMES = {
+    0: "不足",
+    1: "过长",
+}
+
 
 def decode_e6_pid_value(pid, data):
     if data and all(item == 0xFF for item in data):
@@ -732,6 +756,38 @@ def decode_e6_pid_value(pid, data):
         name, unit, states = bit_rules[pid]
         return states.get(raw, str(raw)), name + (f"({unit})" if unit else "")
     return hex_slice(data), f"未知PID({pid})"
+
+
+def parse_location_area_route_alarm(value):
+    location_type = value[0]
+    area_route_id = int.from_bytes(value[1:5], "big")
+    direction = value[5]
+    return {
+        f"[{value[0]:02X}]位置类型": f"{location_type}-{LOCATION_TYPE_NAMES.get(location_type, '未知')}",
+        f"[{value[1:5].hex().upper()}]区域或路线ID": area_route_id,
+        f"[{value[5]:02X}]进出方向": f"{direction}-{LOCATION_ENTER_EXIT_NAMES.get(direction, '未知')}",
+        "单元格值": (
+            f"类型={LOCATION_TYPE_NAMES.get(location_type, f'未知({location_type})')};"
+            f"ID={area_route_id};"
+            f"方向={LOCATION_ENTER_EXIT_NAMES.get(direction, f'未知({direction})')}"
+        ),
+    }
+
+
+def parse_route_time_alarm(value):
+    route_id = int.from_bytes(value[0:4], "big")
+    route_time = int.from_bytes(value[4:6], "big")
+    result = value[6]
+    return {
+        f"[{value[0:4].hex().upper()}]路段ID": route_id,
+        f"[{value[4:6].hex().upper()}]路段行驶时间(s)": route_time,
+        f"[{value[6]:02X}]结果": f"{result}-{ROUTE_TIME_RESULT_NAMES.get(result, '未知')}",
+        "单元格值": (
+            f"路段ID={route_id};"
+            f"行驶时间={route_time}s;"
+            f"结果={ROUTE_TIME_RESULT_NAMES.get(result, f'未知({result})')}"
+        ),
+    }
 
 
 def parse_e6_private_klv(value):
@@ -801,6 +857,12 @@ def parse_location_extra(extra):
         elif item_id == 0x04 and item_len == 2:
             item["需要人工确认报警事件ID"] = int.from_bytes(value, "big")
             item["单元格值"] = item["需要人工确认报警事件ID"]
+        elif item_id == 0x12 and item_len == 6:
+            item["进出区域路线报警对象"] = parse_location_area_route_alarm(value)
+            item["单元格值"] = item["进出区域路线报警对象"]["单元格值"]
+        elif item_id == 0x13 and item_len == 7:
+            item["路线行驶时间报警对象"] = parse_route_time_alarm(value)
+            item["单元格值"] = item["路线行驶时间报警对象"]["单元格值"]
         elif item_id == 0x25 and item_len == 4:
             item["扩展车辆信号状态"] = int.from_bytes(value, "big")
             item["单元格值"] = item["扩展车辆信号状态"]
@@ -1350,6 +1412,82 @@ def parse_register_response(body):
     return result
 
 
+TERMINAL_PARAMETER_NAMES = {
+    0x00000001: ("终端心跳发送间隔", "DWORD", "秒"),
+    0x00000002: ("TCP消息应答超时时间", "DWORD", "秒"),
+    0x00000003: ("TCP消息重传次数", "DWORD", "次"),
+    0x00000004: ("UDP消息应答超时时间", "DWORD", "秒"),
+    0x00000005: ("UDP消息重传次数", "DWORD", "次"),
+    0x00000010: ("主服务器APN", "STRING", ""),
+    0x00000011: ("主服务器用户名", "STRING", ""),
+    0x00000012: ("主服务器密码", "STRING", ""),
+    0x00000013: ("主服务器地址", "STRING", ""),
+    0x00000014: ("备份服务器APN", "STRING", ""),
+    0x00000015: ("备份服务器用户名", "STRING", ""),
+    0x00000016: ("备份服务器密码", "STRING", ""),
+    0x00000017: ("备份服务器地址", "STRING", ""),
+    0x00000018: ("服务器TCP端口", "WORD", ""),
+    0x00000019: ("服务器UDP端口", "WORD", ""),
+    0x00000020: ("位置汇报策略", "BYTE", ""),
+    0x00000021: ("位置汇报方案", "BYTE", ""),
+    0x00000022: ("驾驶员未登录汇报时间间隔", "DWORD", "秒"),
+    0x00000023: ("驾驶员未登录汇报距离间隔", "DWORD", "米"),
+    0x00000024: ("驾驶员未登录汇报次数", "DWORD", "次"),
+    0x00000025: ("休眠时汇报时间间隔", "DWORD", "秒"),
+    0x00000026: ("紧急报警时汇报时间间隔", "DWORD", "秒"),
+    0x00000027: ("终端电话监听号码", "STRING", ""),
+    0x00000028: ("终端电话回拨号码", "STRING", ""),
+    0x00000029: ("位置汇报方式", "DWORD", "秒"),
+    0x0000002A: ("电话回拨/监听功能", "BYTE", ""),
+    0x00000083: ("车辆标识/VIN", "STRING", ""),
+}
+
+
+def decode_terminal_parameter(param_id, value):
+    name, data_type, unit = TERMINAL_PARAMETER_NAMES.get(
+        param_id,
+        (f"未知参数(0x{param_id:08X})", "", ""),
+    )
+    if data_type == "STRING":
+        decoded = decode_trimmed_text(value)
+    elif data_type == "BYTE":
+        decoded = int.from_bytes(value, "big") if value else 0
+    elif data_type == "WORD":
+        decoded = int.from_bytes(value, "big") if value else 0
+    elif data_type == "DWORD":
+        decoded = int.from_bytes(value, "big") if value else 0
+    else:
+        if len(value) in (1, 2, 4, 8):
+            decoded = int.from_bytes(value, "big")
+        else:
+            decoded = decode_trimmed_text(value)
+
+    display = str(decoded)
+    if unit and data_type in ("BYTE", "WORD", "DWORD"):
+        display = f"{display} {unit}"
+    return {
+        "参数名称": name,
+        "参数类型": data_type or "自动",
+        "参数值": decoded,
+        "参数值显示": display,
+        "参数单位": unit,
+    }
+
+
+def build_terminal_parameter_item(param_id, param_len, value):
+    decoded = decode_terminal_parameter(param_id, value)
+    return {
+        f"[{param_id:08X}]参数ID": param_id,
+        f"[{param_len:02X}]参数长度": param_len,
+        "参数名称": decoded["参数名称"],
+        "参数类型": decoded["参数类型"],
+        "参数值HEX": hex_slice(value),
+        "参数值": decoded["参数值"],
+        "参数值文本": decoded["参数值显示"],
+        "参数单位": decoded["参数单位"],
+    }
+
+
 def parse_query_param_response(body):
     result = {"查询终端参数应答": hex_slice(body)}
     if len(body) < 3:
@@ -1368,12 +1506,7 @@ def parse_query_param_response(body):
         require_length(body, offset, param_len)
         value = body[offset:offset + param_len]
         offset += param_len
-        params.append({
-            f"[{param_id:08X}]参数ID": param_id,
-            f"[{param_len:02X}]参数长度": param_len,
-            "参数值HEX": hex_slice(value),
-            "参数值文本": safe_decode(value),
-        })
+        params.append(build_terminal_parameter_item(param_id, param_len, value))
 
     result.update({
         f"[{body[0:2].hex().upper()}]应答流水号": response_serial,
@@ -1402,12 +1535,7 @@ def parse_set_params(body):
         require_length(body, offset, param_len)
         value = body[offset:offset + param_len]
         offset += param_len
-        params.append({
-            f"[{param_id:08X}]参数ID": param_id,
-            f"[{param_len:02X}]参数长度": param_len,
-            "参数值HEX": hex_slice(value),
-            "参数值文本": safe_decode(value),
-        })
+        params.append(build_terminal_parameter_item(param_id, param_len, value))
 
     result.update({
         f"[{body[0]:02X}]参数总数": count,
@@ -1833,6 +1961,236 @@ def parse_camera_shoot_response(body):
     return result
 
 
+AREA_SETTING_TYPE_NAMES = {
+    0: "更新区域",
+    1: "追加区域",
+    2: "修改区域",
+}
+
+AREA_ATTRIBUTE_NAMES = {
+    0: "根据时间",
+    1: "限速",
+    2: "进区域报警给驾驶员",
+    3: "进区域报警给平台",
+    4: "出区域报警给驾驶员",
+    5: "出区域报警给平台",
+    6: "南纬",
+    7: "西经",
+    8: "禁止开门",
+    14: "进区域关闭通信模块",
+    15: "进区域采集GNSS详细定位数据",
+}
+
+
+def parse_area_attributes(value):
+    active = [
+        name for bit, name in AREA_ATTRIBUTE_NAMES.items()
+        if (value >> bit) & 0x01
+    ]
+    return {
+        f"[{value:04X}]区域属性HEX": f"0x{value:04X}",
+        f"[{value:016b}]区域属性二进制": f"{value:016b}",
+        "生效属性": active or ["无"],
+    }
+
+
+def parse_set_circular_area(body):
+    result = {"设置圆形区域": hex_slice(body)}
+    if len(body) < 2:
+        result["解析提示"] = f"设置圆形区域至少需要 2 字节，当前为 {len(body)} 字节。"
+        return result
+
+    offset = 0
+    setting_type, offset = read_u8(body, offset)
+    area_count, offset = read_u8(body, offset)
+    areas = []
+
+    for index in range(area_count):
+        area_start = offset
+        if offset + 18 > len(body):
+            result["解析提示"] = (
+                f"第 {index + 1} 个圆形区域固定字段不足 18 字节，"
+                f"偏移 {offset} 实际剩余 {len(body) - offset} 字节。"
+            )
+            break
+
+        area_id, offset = read_u32(body, offset)
+        attributes, offset = read_u16(body, offset)
+        latitude_raw, offset = read_u32(body, offset)
+        longitude_raw, offset = read_u32(body, offset)
+        radius, offset = read_u32(body, offset)
+
+        area = {
+            "序号": index + 1,
+            "帧内偏移": area_start,
+            f"[{body[area_start:area_start + 4].hex().upper()}]区域ID": area_id,
+            f"[{body[area_start + 4:area_start + 6].hex().upper()}]区域属性": attributes,
+            "区域属性对象": parse_area_attributes(attributes),
+            f"[{body[area_start + 6:area_start + 10].hex().upper()}]中心点纬度": latitude_raw / 1000000,
+            f"[{body[area_start + 10:area_start + 14].hex().upper()}]中心点经度": longitude_raw / 1000000,
+            f"[{body[area_start + 14:area_start + 18].hex().upper()}]半径(m)": radius,
+        }
+
+        if (attributes >> 0) & 0x01:
+            if offset + 12 > len(body):
+                area["解析提示"] = "区域属性要求时间范围，但剩余数据不足 12 字节。"
+                areas.append(area)
+                break
+            start_time_raw, offset = read_bytes(body, offset, 6)
+            end_time_raw, offset = read_bytes(body, offset, 6)
+            area[f"[{hex_slice(start_time_raw)}]起始时间"] = format_bcd_datetime_yyMMddHHmmss(start_time_raw)
+            area[f"[{hex_slice(end_time_raw)}]结束时间"] = format_bcd_datetime_yyMMddHHmmss(end_time_raw)
+
+        if (attributes >> 1) & 0x01:
+            if offset + 3 > len(body):
+                area["解析提示"] = "区域属性要求限速参数，但剩余数据不足 3 字节。"
+                areas.append(area)
+                break
+            max_speed, offset = read_u16(body, offset)
+            overspeed_duration, offset = read_u8(body, offset)
+            area[f"[{body[offset - 3:offset - 1].hex().upper()}]最高速度(km/h)"] = max_speed
+            area[f"[{body[offset - 1]:02X}]超速持续时间(s)"] = overspeed_duration
+
+        areas.append(area)
+
+    result.update({
+        f"[{setting_type:02X}]设置属性": f"{setting_type}-{AREA_SETTING_TYPE_NAMES.get(setting_type, '未知')}",
+        f"[{area_count:02X}]区域总数": area_count,
+        "圆形区域列表": areas,
+    })
+    if len(areas) != area_count:
+        result["解析提示"] = f"声明 {area_count} 个圆形区域，实际解析 {len(areas)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+    return result
+
+
+def parse_area_time_speed_fields(body, offset, attributes, area):
+    if (attributes >> 0) & 0x01:
+        start_time_raw, offset = read_bytes(body, offset, 6)
+        end_time_raw, offset = read_bytes(body, offset, 6)
+        area[f"[{hex_slice(start_time_raw)}]起始时间"] = format_bcd_datetime_yyMMddHHmmss(start_time_raw)
+        area[f"[{hex_slice(end_time_raw)}]结束时间"] = format_bcd_datetime_yyMMddHHmmss(end_time_raw)
+
+    if (attributes >> 1) & 0x01:
+        max_speed, offset = read_u16(body, offset)
+        overspeed_duration, offset = read_u8(body, offset)
+        area[f"[{max_speed:04X}]最高速度(km/h)"] = max_speed
+        area[f"[{overspeed_duration:02X}]超速持续时间(s)"] = overspeed_duration
+    return offset
+
+
+def parse_set_rectangular_area(body):
+    result = {"设置矩形区域": hex_slice(body)}
+    if len(body) < 2:
+        result["解析提示"] = f"设置矩形区域至少需要 2 字节，当前为 {len(body)} 字节。"
+        return result
+
+    offset = 0
+    setting_type, offset = read_u8(body, offset)
+    area_count, offset = read_u8(body, offset)
+    areas = []
+
+    for index in range(area_count):
+        area_start = offset
+        if offset + 22 > len(body):
+            result["解析提示"] = (
+                f"第 {index + 1} 个矩形区域固定字段不足 22 字节，"
+                f"偏移 {offset} 实际剩余 {len(body) - offset} 字节。"
+            )
+            break
+
+        area_id, offset = read_u32(body, offset)
+        attributes, offset = read_u16(body, offset)
+        top_lat_raw, offset = read_u32(body, offset)
+        top_lon_raw, offset = read_u32(body, offset)
+        bottom_lat_raw, offset = read_u32(body, offset)
+        bottom_lon_raw, offset = read_u32(body, offset)
+
+        area = {
+            "序号": index + 1,
+            "帧内偏移": area_start,
+            f"[{body[area_start:area_start + 4].hex().upper()}]区域ID": area_id,
+            f"[{body[area_start + 4:area_start + 6].hex().upper()}]区域属性": attributes,
+            "区域属性对象": parse_area_attributes(attributes),
+            f"[{body[area_start + 6:area_start + 10].hex().upper()}]左上点纬度": top_lat_raw / 1000000,
+            f"[{body[area_start + 10:area_start + 14].hex().upper()}]左上点经度": top_lon_raw / 1000000,
+            f"[{body[area_start + 14:area_start + 18].hex().upper()}]右下点纬度": bottom_lat_raw / 1000000,
+            f"[{body[area_start + 18:area_start + 22].hex().upper()}]右下点经度": bottom_lon_raw / 1000000,
+        }
+
+        try:
+            offset = parse_area_time_speed_fields(body, offset, attributes, area)
+        except ParseError as exc:
+            area["解析提示"] = str(exc)
+            areas.append(area)
+            break
+        areas.append(area)
+
+    result.update({
+        f"[{setting_type:02X}]设置属性": f"{setting_type}-{AREA_SETTING_TYPE_NAMES.get(setting_type, '未知')}",
+        f"[{area_count:02X}]区域总数": area_count,
+        "矩形区域列表": areas,
+    })
+    if len(areas) != area_count:
+        result["解析提示"] = f"声明 {area_count} 个矩形区域，实际解析 {len(areas)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+    return result
+
+
+def parse_set_polygon_area(body):
+    result = {"设置多边形区域": hex_slice(body)}
+    if len(body) < 8:
+        result["解析提示"] = f"设置多边形区域至少需要 8 字节，当前为 {len(body)} 字节。"
+        return result
+
+    offset = 0
+    area_id, offset = read_u32(body, offset)
+    attributes, offset = read_u16(body, offset)
+    area = {
+        f"[{body[0:4].hex().upper()}]区域ID": area_id,
+        f"[{body[4:6].hex().upper()}]区域属性": attributes,
+        "区域属性对象": parse_area_attributes(attributes),
+    }
+
+    try:
+        offset = parse_area_time_speed_fields(body, offset, attributes, area)
+        vertex_count_offset = offset
+        vertex_count, offset = read_u16(body, offset)
+    except ParseError as exc:
+        result["区域对象"] = area
+        result["解析提示"] = str(exc)
+        return result
+
+    vertices = []
+    for index in range(vertex_count):
+        vertex_start = offset
+        try:
+            latitude_raw, offset = read_u32(body, offset)
+            longitude_raw, offset = read_u32(body, offset)
+        except ParseError as exc:
+            result["解析提示"] = (
+                f"声明 {vertex_count} 个顶点，解析第 {index + 1} 个顶点时失败：{exc}"
+            )
+            break
+        vertices.append({
+            "序号": index + 1,
+            "帧内偏移": vertex_start,
+            f"[{body[vertex_start:vertex_start + 4].hex().upper()}]顶点纬度": latitude_raw / 1000000,
+            f"[{body[vertex_start + 4:vertex_start + 8].hex().upper()}]顶点经度": longitude_raw / 1000000,
+        })
+
+    area[f"[{body[vertex_count_offset:vertex_count_offset + 2].hex().upper()}]区域总顶点数"] = vertex_count
+    area["顶点列表"] = vertices
+    result["区域对象"] = area
+    if len(vertices) != vertex_count:
+        result["解析提示"] = f"声明 {vertex_count} 个顶点，实际解析 {len(vertices)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+    return result
+
+
 def parse_delete_id_list(body, name):
     result = {name: hex_slice(body)}
     if len(body) < 1:
@@ -1965,9 +2323,15 @@ def parse_body(msg_id, body, protocol="2013"):
         return parse_phonebook_setting(body)
     if msg_id == 0x8500:
         return parse_vehicle_control(body)
+    if msg_id == 0x8600:
+        return parse_set_circular_area(body)
+    if msg_id == 0x8602:
+        return parse_set_rectangular_area(body)
+    if msg_id == 0x8604:
+        return parse_set_polygon_area(body)
     if msg_id in (0x8601, 0x8603, 0x8605, 0x8607):
         return parse_delete_id_list(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"))
-    if msg_id in (0x8600, 0x8602, 0x8604, 0x8606):
+    if msg_id == 0x8606:
         return parse_raw_with_note(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"), "已识别标准区域/路线设置消息，字段为可变结构，当前保留原始 HEX。")
     if msg_id in (0x8700, 0x8701):
         return parse_raw_with_note(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"), "已识别标准行驶记录仪消息，当前保留原始 HEX。")
@@ -2635,6 +2999,92 @@ def build_0f42_key_info(lines, body_obj):
             append_key_line(lines, "国别编码", country_value, 1)
 
 
+def build_circular_area_key_info(lines, body_obj):
+    append_key_line(lines, "消息体", "设置圆形区域")
+    append_body_raw_hex(lines, body_obj)
+    setting_key, setting_value = find_top_value_by_suffix(body_obj, "设置属性")
+    count_key, count_value = find_top_value_by_suffix(body_obj, "区域总数")
+    append_key_line(lines, "设置属性", setting_value)
+    append_key_line(lines, "区域总数", count_value)
+
+    areas = body_obj.get("圆形区域列表", []) if isinstance(body_obj, dict) else []
+    for area in areas:
+        if not isinstance(area, dict):
+            continue
+        lines.append("")
+        append_key_line(lines, f"区域{area.get('序号', '')}", "")
+        append_key_line(lines, "区域ID", find_object_value_by_suffix(area, "区域ID"), 1)
+        attr_obj = area.get("区域属性对象", {})
+        if isinstance(attr_obj, dict):
+            append_key_line(lines, "生效属性", attr_obj.get("生效属性", []), 1)
+        append_key_line(lines, "中心点纬度", find_object_value_by_suffix(area, "中心点纬度"), 1)
+        append_key_line(lines, "中心点经度", find_object_value_by_suffix(area, "中心点经度"), 1)
+        append_key_line(lines, "半径(m)", find_object_value_by_suffix(area, "半径(m)"), 1)
+        for key, value in area.items():
+            if any(marker in str(key) for marker in ("起始时间", "结束时间", "最高速度", "超速持续时间")):
+                append_key_line(lines, key, value, 1)
+
+
+def build_rectangular_area_key_info(lines, body_obj):
+    append_key_line(lines, "消息体", "设置矩形区域")
+    append_body_raw_hex(lines, body_obj)
+    append_key_line(lines, "设置属性", find_top_value_by_suffix(body_obj, "设置属性")[1])
+    append_key_line(lines, "区域总数", find_top_value_by_suffix(body_obj, "区域总数")[1])
+    for area in body_obj.get("矩形区域列表", []):
+        lines.append("")
+        append_key_line(lines, f"区域{area.get('序号', '')}", "")
+        append_key_line(lines, "区域ID", find_object_value_by_suffix(area, "区域ID"), 1)
+        append_key_line(lines, "生效属性", area.get("区域属性对象", {}).get("生效属性", []), 1)
+        for suffix in ("左上点纬度", "左上点经度", "右下点纬度", "右下点经度"):
+            append_key_line(lines, suffix, find_object_value_by_suffix(area, suffix), 1)
+        for key, value in area.items():
+            if any(marker in str(key) for marker in ("起始时间", "结束时间", "最高速度", "超速持续时间")):
+                append_key_line(lines, key, value, 1)
+
+
+def build_polygon_area_key_info(lines, body_obj):
+    append_key_line(lines, "消息体", "设置多边形区域")
+    append_body_raw_hex(lines, body_obj)
+    area = body_obj.get("区域对象", {}) if isinstance(body_obj, dict) else {}
+    if not isinstance(area, dict):
+        return
+    append_key_line(lines, "区域ID", find_object_value_by_suffix(area, "区域ID"))
+    append_key_line(lines, "生效属性", area.get("区域属性对象", {}).get("生效属性", []))
+    for key, value in area.items():
+        if any(marker in str(key) for marker in ("起始时间", "结束时间", "最高速度", "超速持续时间", "区域总顶点数")):
+            append_key_line(lines, key, value)
+    vertices = area.get("顶点列表", [])
+    if vertices:
+        lines.append("顶点列表")
+        for vertex in vertices:
+            append_key_line(
+                lines,
+                f"顶点{vertex.get('序号', '')}",
+                f"{find_object_value_by_suffix(vertex, '顶点纬度')}, "
+                f"{find_object_value_by_suffix(vertex, '顶点经度')}",
+                1,
+            )
+
+
+def build_terminal_parameter_key_info(lines, body_obj):
+    params = body_obj.get("参数列表", []) if isinstance(body_obj, dict) else []
+    if not params:
+        return False
+
+    append_key_line(lines, "参数数量", body_obj.get("[07]应答参数个数", body_obj.get("[01]参数总数", len(params))))
+    for index, item in enumerate(params, start=1):
+        if not isinstance(item, dict):
+            continue
+        param_id = find_top_value_by_suffix(item, "参数ID")[1]
+        param_id_text = f"{param_id:08X}" if isinstance(param_id, int) else str(param_id)
+        name = item.get("参数名称", f"未知参数(0x{param_id_text})")
+        value_text = item.get("参数值文本", item.get("参数值", "N/A"))
+
+        lines.append("")
+        append_key_line(lines, f"参数{index:02d} [{param_id_text}] {name}", value_text, 1)
+    return True
+
+
 def build_location_key_info(lines, body_obj):
     append_key_line(lines, "消息体", "位置信息汇报")
     append_body_raw_hex(lines, body_obj)
@@ -2689,6 +3139,8 @@ def build_generic_body_key_info(lines, body_obj):
         append_key_line(lines, "消息体", body_obj)
         return
     append_body_raw_hex(lines, body_obj)
+    if build_terminal_parameter_key_info(lines, body_obj):
+        return
     for key, value in body_obj.items():
         if isinstance(value, (dict, list)):
             continue
@@ -2723,6 +3175,12 @@ def build_key_info_for_frame(parsed):
         build_0f3b_key_info(lines, body_obj)
     elif msg_id == 0x0F42 and isinstance(body_obj, dict):
         build_0f42_key_info(lines, body_obj)
+    elif msg_id == 0x8600 and isinstance(body_obj, dict):
+        build_circular_area_key_info(lines, body_obj)
+    elif msg_id == 0x8602 and isinstance(body_obj, dict):
+        build_rectangular_area_key_info(lines, body_obj)
+    elif msg_id == 0x8604 and isinstance(body_obj, dict):
+        build_polygon_area_key_info(lines, body_obj)
     elif msg_id == 0x0200 and isinstance(body_obj, dict):
         build_location_key_info(lines, body_obj)
     else:
@@ -2814,7 +3272,13 @@ class BatchProgressDialog:
 class JT808ParserApp:
     def __init__(self, root):
         self.root = root
-        self.root.title("GT117-YK-808 标准808协议解析工具-Mangetic-260804")
+        self.root.title("GT117-YK-808 标准808协议解析工具-Mangetic-260928")
+        icon_path = resource_path(ICON_FILENAME)
+        if os.path.exists(icon_path):
+            try:
+                self.root.iconbitmap(default=icon_path)
+            except tk.TclError:
+                pass
         self.root.geometry("1060x720")
         self.root.minsize(860, 560)
         self.auto_parse_job = None

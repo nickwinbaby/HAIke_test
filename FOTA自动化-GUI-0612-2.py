@@ -13,29 +13,29 @@ is_running = False
 # 下拉框映射关系
 FOTA_TYPE_MAP = {
     "00-MCU": 0,
-    "01-MDM": 1,
+    # "01-MDM": 1,
     "02-BLE": 2,
-    "03-GNSS": 3,
-    "04-BOOT": 4,
+    # "03-GNSS": 3,
+    # "04-BOOT": 4,
     "05-AP": 5,
-    "06-CFG": 6,
-    "FF-HARDWARE": 255
+    # "06-CFG": 6,
+    # "FF-HARDWARE": 255
 }
 DOWNLOAD_TYPE_MAP = {
-    "01-TCP": 1,
+    # "01-TCP": 1,
     "02-HTTP": 2
 }
 
 # ========== 【新增1】FOTA类型对应默认升级等待时长 ==========
 FOTA_WAIT_CFG = {
     "00-MCU": 420,
-    "01-MDM": 420,
+    # "01-MDM": 420,
     "02-BLE": 420,
-    "03-GNSS": 420,
-    "04-BOOT": 420,
+    # "03-GNSS": 420,
+    # "04-BOOT": 420,
     "05-AP": 300,
-    "06-CFG": 420,
-    "FF-HARDWARE": 420
+    # "06-CFG": 420,
+    # "FF-HARDWARE": 420
 }
 
 # ===================== 占位提示框工具函数 =====================
@@ -70,8 +70,12 @@ def log(msg, log_widget=None):
     """打印带时间戳的日志"""
     content = f"[{datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n"
     if log_widget:
-        log_widget.insert(tk.END, content)
-        log_widget.see(tk.END)
+        try:
+            log_widget.configure(state="normal")
+            log_widget.insert(tk.END, content)
+            log_widget.see(tk.END)
+        finally:
+            log_widget.configure(state="disabled")
     else:
         print(content.strip())
 
@@ -79,6 +83,12 @@ def log(msg, log_widget=None):
 def get_unix_ms(offset_sec=0):
     """获取当前 Unix 毫秒时间戳"""
     return str(int(time.time() * 1000 + offset_sec * 1000))
+
+
+def format_beijing_time(utc_ts):
+    """把 Unix UTC 秒时间戳转换为北京时间"""
+    bj_tz = datetime.timezone(datetime.timedelta(hours=8))
+    return datetime.datetime.fromtimestamp(utc_ts, tz=datetime.timezone.utc).astimezone(bj_tz).strftime('%Y-%m-%d %H:%M:%S')
 
 
 def hex_to_ascii(hex_list):
@@ -136,21 +146,6 @@ def parse_version_report_frame(hex_list, fotaType):
             hex_list, offset, "MCU version number"
         )
 
-        # MCU模式解析完成直接返回，不再解析后续字段
-        if fotaType == 0:
-            return {
-                "hardware_version": hardware_version,
-                "mcu_version": mcu_version,
-                "modem_version": "",
-                "utc": 0,
-                "cfg_version": "",
-                "fota_status": "",
-                "ap_version": "",
-                "mcu_is_t99": mcu_version.endswith("T99"),
-                "ap_is_t99": False
-            }
-
-        # AP模式继续解析后续字段
         modem_version, offset = parse_ascii_length_field(
             hex_list, offset, "Modem version number"
         )
@@ -160,6 +155,20 @@ def parse_version_report_frame(hex_list, fotaType):
         utc_hex = ''.join(hex_list[offset:offset + 4])
         utc_ts = int(utc_hex, 16)
         offset += 4
+
+        # MCU模式只需要解析到 UTC 即可，后续字段对当前版本判定不是必须项
+        if fotaType == 0:
+            return {
+                "hardware_version": hardware_version,
+                "mcu_version": mcu_version,
+                "modem_version": modem_version,
+                "utc": utc_ts,
+                "cfg_version": "",
+                "fota_status": "",
+                "ap_version": "",
+                "mcu_is_t99": mcu_version.endswith("T99"),
+                "ap_is_t99": False
+            }
 
         cfg_version, offset = parse_ascii_length_field(
             hex_list, offset, "CFG file version"
@@ -209,6 +218,7 @@ def parse_target_version(rawdata_list, fotaType):
         log(
             f"第 {idx + 1} 条版本帧解析成功 | "
             f"UTC={result['utc']} | "
+            f"北京时间={format_beijing_time(result['utc'])} | "
             f"MCU={result['mcu_version']} | "
             f"MCU后三位是否T99={result['mcu_is_t99']} | "
             f"AP={result['ap_version']} | "
@@ -219,7 +229,7 @@ def parse_target_version(rawdata_list, fotaType):
         log("未检测到有效版本上报帧")
         return None
 
-    latest = max(candidates, key=lambda x: x["utc"])
+    latest = max(candidates, key=lambda x: (x["utc"], x["idx"]))
     if fotaType == 5:
         version = latest["ap_version"]
         is_t99 = latest["ap_is_t99"]
@@ -231,6 +241,7 @@ def parse_target_version(rawdata_list, fotaType):
         f"选取第 {latest['idx'] + 1} 条最新版本帧 | "
         f"校验字段={check_name} | "
         f"UTC={latest['utc']} | "
+        f"北京时间={format_beijing_time(latest['utc'])} | "
         f"VERSION={version} | "
         f"后三位是否T99={is_t99}"
     )
@@ -270,6 +281,12 @@ def send_cmd(imei, cmd):
     try:
         r = requests.post(url, json=data, timeout=10)
         log(f"返回: {r.status_code} {r.text}")
+        try:
+            resp_json = r.json()
+        except Exception:
+            resp_json = {}
+        if resp_json.get("message") == "成功":
+            log("设备重启")
     except Exception as e:
         log(f"下发指令接口异常: {e}")
 
@@ -500,7 +517,7 @@ def run_fota_loop(imei, target_a, target_b, fotaType, downloadType, upgrade_wait
             break
 
         # 动态读取配置的升级等待时间
-        log(f"开始等待升级过程，共计{upgrade_wait_sec}秒")
+        log(f"开始等待升级过程，共计{upgrade_wait_sec}秒，目标版本{target_version}")
         start = time.time()
         while time.time() - start < upgrade_wait_sec and not stop_event.is_set():
             elapsed = int(time.time() - start)
@@ -582,7 +599,9 @@ def stop_task():
 
 def clear_log():
     """清空日志"""
+    log_text.configure(state="normal")
     log_text.delete(1.0, tk.END)
+    log_text.configure(state="disabled")
 
 
 def save_log():
@@ -608,7 +627,7 @@ def save_log():
 
 # ===================== 主窗口创建 =====================
 root = tk.Tk()
-root.title("FOTA 循环升级工具 - Mangetic - 2026-6-12 ★★★★★ 广告位招租 ★★★★★")
+root.title("FOTA 循环升级工具 - Mangetic - 2026-09-07")
 root.geometry("700x600")
 
 # 配置自适应权重
@@ -675,6 +694,7 @@ btn_save.pack(side=tk.LEFT, padx=10)
 tk.Label(root, text="日志输出", anchor="w").grid(row=7, column=0, columnspan=2, sticky="w", padx=10)
 log_text = scrolledtext.ScrolledText(root)
 log_text.grid(row=8, column=0, columnspan=2, padx=10, pady=5, sticky="nsew")
+log_text.configure(state="disabled")
 
 # 重定向日志输出
 original_log = log
