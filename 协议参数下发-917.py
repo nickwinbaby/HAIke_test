@@ -2,8 +2,10 @@ import sys
 import os
 import time
 import re
+import threading
 import requests
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation
 from openpyxl import Workbook, load_workbook
 
 from PyQt5.QtWidgets import (
@@ -16,7 +18,7 @@ from PyQt5.QtCore import Qt, QThread, pyqtSignal
 from PyQt5.QtGui import QColor, QIcon
 
 
-APP_ICON_FILE = "protocol_param_send.ico"
+APP_ICON_FILE = os.path.join("build_photo", "protocol_param_send.ico")
 
 
 def resource_path(filename):
@@ -38,7 +40,7 @@ def resource_path(filename):
 # =========================================================
 # 本配置由：
 # 1. 新建 XLSX 工作表.xlsx：项目支持 Yes 关系
-# 2. GoTrack_V4.0.3_2026-04-28_BETA_version.docx：KEY / Length / Default value / Description
+# 2. GoTrack_4.0.3_2026-10-22_BETA.html：KEY / Length / Default value / Description
 # 自动整理生成。
 #
 # key 规则：0x00010000 -> 0001。
@@ -56,7 +58,7 @@ def resource_path(filename):
 # ILLEGAL_SET_CONFIG 非法值设置的
 
 # 编译命令
-# pyinstaller -F -w --clean -n "协议参数下发" -i "protocol_param_send.ico" --add-data "protocol_param_send.ico;." "协议参数下发-520-yr.py"
+# pyinstaller -F -w --clean -n "协议参数下发" -i "build_photo\protocol_param_send.ico" --add-data "build_photo;build_photo" "协议参数下发-917.py"
 
 
 DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
@@ -277,8 +279,8 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
  '0223': {'name': 'UUID filter for BLE accessories',
           'length': 6,
           'length_type': 'fixed',
-          'default_hex': 'FFFFFFFFFFFF',
-          'default': 'FFFFFFFFFFFF',
+          'default_hex': '01030001FFFF',
+          'default': '01030001FFFF',
           'query_rule': 'hex_string',
           'description': 'This parameter is used to filter the target BLE accessories. Byte 0-3: The detailed UUID If '
                          'some bytes are not used, please fill in 0xFF in the end. Byte 4: AD Type 0x02: Incomplete '
@@ -378,14 +380,13 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'query_rule': 'hex_to_int',
           'description': 'This parameter is to set the wakeup interval for GL103 when it is in Workmode 1 (sleep to '
                          'active 1). Unit: Hour Precision: 1 Default value: 24 hours, 0x18 Range: 1-36'},
- '0233': {'name': 'The switch to enable/disable device tamper warning, for GL103',
-          'length': 1,
+ '0233': {'name': 'Device Tamper Warning Configuration (Structured Value)',
+          'length': 2,
           'length_type': 'fixed',
-          'default_hex': '00',
-          'default': 0,
-          'query_rule': 'hex_to_int',
-          'description': 'This parameter is to enable/disable device tamper warning for GL103. 0x00: Disable 0x01: '
-                         'Enable Default value: Disable, 0x00'},
+          'default_hex': '0001',
+          'default': '0001',
+          'query_rule': 'hex_string',
+          'description': 'Byte 1: warning enable. Byte 2: emergency tracking enable. Both bytes are applied together.'},
  '0235': {'name': 'Workmode 2: The interval to wakeup from sleep to active 3, for GL103',
           'length': 1,
           'length_type': 'fixed',
@@ -398,22 +399,17 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
  '0236': {'name': 'The safety range of temperature for temperature warning',
           'length': 4,
           'length_type': 'fixed',
-          'default_hex': '009600DC',
-          'default': '009600DC',
-          'query_rule': 'hex_string',
-          'description': 'This parameter is to set the safety range of temperature. Unit: degrees celsius Precision: '
-                         '0.1 Offset: -40 The byte 2-3 is the minimum of the safety range. For example, the 0x00FA in '
-                         'the example. The byte 0-1 is the maximum of the safety range. For example, the 0x01E0 in the '
-                         'example. Default value f'},
- '0237': {'name': 'The switch to enable/disable temperature warning report',
-          'length': 1,
+          'default_hex': '017C028A',
+          'default': '-2|25',
+          'query_rule': 'two_int_from_hex4_x0.1_offset_-40',
+          'description': 'Bytes 1-2: lower limit. Bytes 3-4: upper limit. Precision 0.1 C, offset -40 C.'},
+ '0237': {'name': 'Temperature Warning Configuration (Structured Value)',
+          'length': 2,
           'length_type': 'fixed',
-          'default_hex': '00',
-          'default': 0,
-          'query_rule': 'hex_to_int',
-          'description': 'The switch to enable/disable temperature warning report. 0x00: Disable 0x01: Enable Default '
-                         'value: Disable, 0x00 Note: For GL103, If the parameter 0x02550000 is disabled, then this '
-                         'parameter is not valid.'},
+          'default_hex': '0001',
+          'default': '0001',
+          'query_rule': 'hex_string',
+          'description': 'Byte 1: warning enable. Byte 2: emergency tracking enable. Both bytes are applied together.'},
  '0238': {'name': 'Workmode 3: The interval to switch from active 4 to active 1, for GL103',
           'length': 1,
           'length_type': 'fixed',
@@ -422,15 +418,13 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'query_rule': 'hex_to_int',
           'description': 'This parameter is to set the interval for GL103 when it is in Workmode 3 (active 4 to active '
                          '1). Unit: Minutes Precision: 1 Default value: 30 minutes, 0x1E Range: 15-180'},
- '0239': {'name': 'The switch to enable/disable air pressure warning report',
-          'length': 1,
+ '0239': {'name': 'Air Pressure Warning Configuration (Structured Value)',
+          'length': 2,
           'length_type': 'fixed',
-          'default_hex': '01',
-          'default': 1,
-          'query_rule': 'hex_to_int',
-          'description': 'The switch to enable/disable air pressure warning report. 0x00: Disable 0x01: Enable Default '
-                         'value: Enable, 0x01 Note: If the parameter 0x02560000 is disabled, then this parameter is '
-                         'not valid.'},
+          'default_hex': '0000',
+          'default': '0000',
+          'query_rule': 'hex_string',
+          'description': 'Byte 1: warning enable. Byte 2: emergency tracking enable. Both bytes are applied together.'},
  '023A': {'name': 'The threshold for air pressure warning',
           'length': 2,
           'length_type': 'fixed',
@@ -455,14 +449,13 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'query_rule': 'hex_to_int',
           'description': 'Precision: 1 Unit: minute Default value: 60 minutes, 0x003C Range: 1-1440 Notes: If it is '
                          'set as 6, then device will report 1 GPS position point every 6 minutes.'},
- '023D': {'name': 'The switch to enable/disable ambient light warning, for GL103',
-          'length': 1,
+ '023D': {'name': 'Ambient Light Warning Configuration (Structured Value)',
+          'length': 2,
           'length_type': 'fixed',
-          'default_hex': '00',
-          'default': 0,
-          'query_rule': 'hex_to_int',
-          'description': 'This parameter is to enable/disable device ambient light warning for GL103. 0x00: Disable '
-                         '0x01: Enable Default value: Disable, 0x00'},
+          'default_hex': '0001',
+          'default': '0001',
+          'query_rule': 'hex_string',
+          'description': 'Byte 1: warning enable. Byte 2: emergency tracking enable. Both bytes are applied together.'},
  '0240': {'name': 'Wifi SSID  for WiFi 5GHz',
           'length': None,
           'length_type': 'dynamic',
@@ -600,11 +593,11 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'query_rule': 'hex_to_int',
           'description': 'Unit: Hour Precision: 1 Offset: 0 Data range: 1-168 Default value: 24 hours, 0x18'},
  '0275': {'name': 'Enable/Disable Log report function (for Router)',
-          'length': None,
-          'length_type': 'dynamic',
+          'length': 1,
+          'length_type': 'fixed',
           'default_hex': '00',
-          'default': '00',
-          'query_rule': 'hex_to_ascii_dynamic_len',
+          'default': 0,
+          'query_rule': 'hex_to_int',
           'description': 'This parameter is to enable/disable the log report function. 0x00: Disable 0x01: Enable '
                          'Default value: Disable, 0x00'},
  '0276': {'name': 'SIM card switch to SIM1 when SIM2 is used (for Router)',
@@ -705,24 +698,20 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'default': 0,
           'query_rule': 'hex_to_int',
           'description': '0x00: Deep Sleep 0x01: Light Sleep 0x02: GPS Online Sleep Default value: Deep Sleep, 0x00'},
- '0418': {'name': 'Enable/Disable to report humidity warning',
-          'length': 1,
+ '0418': {'name': 'Humidity Warning Configuration (Structured Value)',
+          'length': 2,
           'length_type': 'fixed',
-          'default_hex': '00',
-          'default': 0,
-          'query_rule': 'hex_to_int',
-          'description': '0x00: Disable 0x01: Enable Default value: Disable, 0x00 Note: If the parameter 0x04160000 is '
-                         'disabled, then this parameter 0x04180000 is not valid, the warning shall not be reported.'},
+          'default_hex': '0001',
+          'default': '0001',
+          'query_rule': 'hex_string',
+          'description': 'Byte 1: warning enable. Byte 2: emergency tracking enable. Both bytes are applied together.'},
  '0419': {'name': 'The safety range of humidity for humidity warning',
           'length': 4,
           'length_type': 'fixed',
           'default_hex': '012C03E8',
-          'default': '012C03E8',
-          'query_rule': 'hex_string',
-          'description': 'This parameter is to set the safety range of humidity. Unit: % Precision: 0.1 Offset: 0 The '
-                         'byte 2-3 is the minimum of the safety range. For example, the 0x00FA in the example. The '
-                         'byte 0-1 is the maximum of the safety range. For example, the 0x01E0 in the example. Default '
-                         'value for GATH02: 30.0 to '},
+          'default': '30|100',
+          'query_rule': 'two_int_from_hex4_x0.1_offset_0',
+          'description': 'Bytes 1-2: lower limit. Bytes 3-4: upper limit. Precision 0.1 %RH, offset 0.'},
  '041A': {'name': 'Force the sensor to re-learning',
           'length': 1,
           'length_type': 'fixed',
@@ -929,8 +918,8 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
  '0435': {'name': 'Device LED Control',
           'length': 1,
           'length_type': 'fixed',
-          'default_hex': '05',
-          'default': 5,
+          'default_hex': '01',
+          'default': 1,
           'query_rule': 'hex_to_int',
           'description': 'This parameter is to enable or disable the LED indication. Here the LED means all of the '
                          'LEDs on device. 0x00: Disable. The device LED will be off all the time. 0x01: Device LED '
@@ -954,14 +943,13 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'query_rule': 'hex_to_int',
           'description': 'This parameter is to enable/disable message “Few Sensor Data” report. Defintion: 0x00: '
                          'Disable 0x01: Enable Default is disable.'},
- '0438': {'name': 'Enable/Disable to Detect and Report “Warning Judged from Asensor Data”',
-          'length': 1,
+ '0438': {'name': 'Shock Warning Configuration for GL109-G (Structured Value)',
+          'length': 8,
           'length_type': 'fixed',
-          'default_hex': '00',
-          'default': 0,
-          'query_rule': 'hex_to_int',
-          'description': 'This parameter is to enable/disable to detect and report warning “Warning Judged from '
-                         'Asensor Data”. Defintion: 0x00: Disable 0x01: Enable Default value is disable (0x00).'},
+          'default_hex': '0014285078B40301',
+          'default': '0014285078B40301',
+          'query_rule': 'hex_string',
+          'description': 'Eight-byte GL109-G shock warning configuration, including emergency tracking enable.'},
  '0439': {'name': 'Check Interval for Geo-fence',
           'length': 4,
           'length_type': 'fixed',
@@ -970,25 +958,20 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'query_rule': 'hex_to_int',
           'description': 'This parameter is for server to configure the check interval of the geo-fence event. Unit: '
                          'Second Precision: 1 Offset: 0 Data range: 8-84600 Default value: 60'},
- '043A': {'name': 'Enable/Disable the “GPS Data” Message Report',
-          'length': 1,
+ '043A': {'name': 'GNSS Location Configuration (Structured Value)',
+          'length': 3,
           'length_type': 'fixed',
-          'default_hex': '01',
-          'default': 1,
-          'query_rule': 'hex_to_int',
-          'description': 'This parameter is for server to enable or disable the message “GPS Data” report. Definition: '
-                         '0x00: Disable to report GPS message. 0x01: Enable to report GPS message. Default valus is '
-                         '0x01.'},
- '043B': {'name': 'Enable/Disable the “LBS Data” Message Report',
-          'length': 1,
+          'default_hex': '01003C',
+          'default': '01003C',
+          'query_rule': 'hex_string',
+          'description': 'Byte 1: GNSS enable. Bytes 2-3: GNSS search timeout in seconds.'},
+ '043B': {'name': 'LBS Location Configuration (Structured Value)',
+          'length': 10,
           'length_type': 'fixed',
-          'default_hex': '01',
-          'default': 1,
-          'query_rule': 'hex_to_int',
-          'description': 'This parameter is for server to enable or disable the message “LBS Data” report. Definition: '
-                         '0x00: Disable to report LBS data. 0x01: Enable to report LBS data, only when "Device '
-                         'Collection Data" message report. 0x02: Enable to report LBS data, including when "Device '
-                         'Collection Data" message report, '},
+          'default_hex': '0101003C0100B400003C',
+          'default': '0101003C0100B400003C',
+          'query_rule': 'hex_string',
+          'description': 'Ten-byte LBS configuration for WiFi, cellular and BLE positioning switches and timeouts.'},
  '043C': {'name': 'Enable/Disable the “Location Data” Message Report',
           'length': 1,
           'length_type': 'fixed',
@@ -1018,8 +1001,8 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
  '043F': {'name': 'Enable/Disable AGPS function',
           'length': 1,
           'length_type': 'fixed',
-          'default_hex': '01',
-          'default': 1,
+          'default_hex': '00',
+          'default': 0,
           'query_rule': 'hex_to_int',
           'description': 'This parameter is for server to enable/disable the AGPS function on device. Definition: '
                          '0x00: AGPS function OFF. 0x01: AGPS funxtion ON. Default value: 0x00.'},
@@ -1064,7 +1047,121 @@ DEFAULT_QUERY_CONFIG = {'F000': {'name': 'Reset to default value',
           'description': 'When to install the FOTA package if FOTA package download successfully. 0x00: to install the '
                          'FOTA package after IGN off for a while. 0x01: to install the FOTA package immediately. '
                          'Default value is 0x00. Notes: Here FOTA means all components FOTA, including MCU, BLE, '
-                         'Modem, etc.'}}
+                         'Modem, etc.'},
+ '0259': {'name': 'Enable/Disable the humidity report',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '00', 'default': 0,
+          'query_rule': 'hex_to_int',
+          'description': 'GL109-G internal humidity report switch. 0x00 disable, 0x01 enable.'},
+ '030D': {'name': 'Rollover report settings (GT160_G)',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '013C1402',
+          'default': '013C1402', 'query_rule': 'hex_string',
+          'description': 'Four-byte rollover event configuration for GT160_G.'},
+ '0449': {'name': 'GNSS drift suppression',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '00', 'default': 0,
+          'query_rule': 'hex_to_int', 'description': '0x00 disable, 0x01 enable.'},
+ '044A': {'name': 'Beacon Scan Settings',
+          'length': None, 'length_type': 'dynamic', 'default_hex': '020100',
+          'default': '0100', 'query_rule': 'parse_raw_hex_with_len',
+          'description': 'L + enable + MAC count + optional six-byte MAC addresses.'},
+ '044B': {'name': 'WiFi Mode',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '00', 'default': 0,
+          'query_rule': 'hex_to_int', 'description': '0x00 AP mode, 0x01 STA mode.'},
+ '044C': {'name': 'WiFi AP List',
+          'length': None, 'length_type': 'dynamic', 'default_hex': '0100',
+          'default': '00', 'query_rule': 'parse_raw_hex_with_len',
+          'description': 'L + AP count + AP entries. The empty-list wire value is 0100.'},
+ '044D': {'name': 'Enable IGN for pre-ign detection',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '00', 'default': 0,
+          'query_rule': 'hex_to_int', 'description': '0x00 disable, 0x01 enable.'},
+ '044E': {'name': 'CAN2 Function Selection for GT118',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '00', 'default': 0,
+          'query_rule': 'hex_to_int', 'description': '0x00 Tachograph, 0x01 Standard CAN.'},
+ '044F': {'name': 'Encryption Type',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '02', 'default': 2,
+          'query_rule': 'hex_to_int', 'description': '0x02 AES-256 ECB, 0xFF no encryption.'},
+ '0450': {'name': 'Accumulated Mileage Base',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '00000000',
+          'default': '00000000', 'query_rule': 'hex_string',
+          'description': 'Unsigned 32-bit mileage base in meters.'},
+ '0451': {'name': 'Severe rapid acceleration event settings',
+          'length': 2, 'length_type': 'fixed', 'default_hex': '0128',
+          'default': '0128', 'query_rule': 'hex_string', 'description': 'Two-byte structured event setting.'},
+ '0452': {'name': 'Severe rapid deceleration event settings',
+          'length': 2, 'length_type': 'fixed', 'default_hex': '0132',
+          'default': '0132', 'query_rule': 'hex_string', 'description': 'Two-byte structured event setting.'},
+ '0453': {'name': 'Deceleration without brake event settings',
+          'length': 3, 'length_type': 'fixed', 'default_hex': '010A0A',
+          'default': '010A0A', 'query_rule': 'hex_string', 'description': 'Three-byte structured event setting.'},
+ '0454': {'name': 'Severe sharp turn event settings',
+          'length': 2, 'length_type': 'fixed', 'default_hex': '0132',
+          'default': '0132', 'query_rule': 'hex_string', 'description': 'Two-byte structured event setting.'},
+ '0455': {'name': 'High-speed sharp turn event settings',
+          'length': 3, 'length_type': 'fixed', 'default_hex': '01281E',
+          'default': '01281E', 'query_rule': 'hex_string', 'description': 'Three-byte structured event setting.'},
+ '0456': {'name': 'Rapid start event settings',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '01140314',
+          'default': '01140314', 'query_rule': 'hex_string', 'description': 'Four-byte structured event setting.'},
+ '0457': {'name': 'Rapid stop event settings',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '01140314',
+          'default': '01140314', 'query_rule': 'hex_string', 'description': 'Four-byte structured event setting.'},
+ '0458': {'name': 'Throttle stomp event settings',
+          'length': 7, 'length_type': 'fixed', 'default_hex': '01283C46030A14',
+          'default': '01283C46030A14', 'query_rule': 'hex_string', 'description': 'Seven-byte structured event setting.'},
+ '0459': {'name': 'Frequent braking event settings',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '013C0814',
+          'default': '013C0814', 'query_rule': 'hex_string', 'description': 'Four-byte structured event setting.'},
+ '045A': {'name': 'Long-time idle event settings',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '01060C15',
+          'default': '01060C15', 'query_rule': 'hex_string', 'description': 'Four-byte structured event setting.'},
+ '045B': {'name': 'Excessive idle ratio event settings',
+          'length': 5, 'length_type': 'fixed', 'default_hex': '0114003C3C',
+          'default': '0114003C3C', 'query_rule': 'hex_string', 'description': 'Five-byte structured event setting.'},
+ '045C': {'name': 'High RPM driving event settings',
+          'length': 6, 'length_type': 'fixed', 'default_hex': '010507D00A14',
+          'default': '010507D00A14', 'query_rule': 'hex_string', 'description': 'Six-byte structured event setting.'},
+ '045D': {'name': 'High RPM at idle event settings',
+          'length': 5, 'length_type': 'fixed', 'default_hex': '0105DC0A14',
+          'default': '0105DC0A14', 'query_rule': 'hex_string', 'description': 'Five-byte structured event setting.'},
+ '045E': {'name': 'High engine load event settings',
+          'length': 5, 'length_type': 'fixed', 'default_hex': '01550A5F14',
+          'default': '01550A5F14', 'query_rule': 'hex_string', 'description': 'Five-byte structured event setting.'},
+ '045F': {'name': 'Inefficient driving event settings',
+          'length': 7, 'length_type': 'fixed', 'default_hex': '01XXXX00640114',
+          'default': '01XXXX00640114', 'query_rule': 'hex_string',
+          'description': 'Bytes 2-3 have no factory default and are represented by wildcard X nibbles.'},
+ '0460': {'name': 'Low-speed frequent stop-start event settings',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '010A0203',
+          'default': '010A0203', 'query_rule': 'hex_string', 'description': 'Four-byte structured event setting.'},
+ '0461': {'name': 'Excessive speed fluctuation event settings',
+          'length': 3, 'length_type': 'fixed', 'default_hex': '01141E',
+          'default': '01141E', 'query_rule': 'hex_string', 'description': 'Three-byte structured event setting.'},
+ '0462': {'name': 'Ignition Source Setting',
+          'length': 2, 'length_type': 'fixed', 'default_hex': '001F',
+          'default': '001F', 'query_rule': 'hex_string', 'description': 'Two-byte ignition-source bitmask.'},
+ '0463': {'name': 'Emergency Tracking Mode Configuration',
+          'length': 4, 'length_type': 'fixed', 'default_hex': '012C050F',
+          'default': '012C050F', 'query_rule': 'hex_string', 'description': 'Four-byte emergency tracking schedule.'},
+ '0464': {'name': 'Tilt Warning Configuration',
+          'length': 8, 'length_type': 'fixed', 'default_hex': '001E053C05780501',
+          'default': '001E053C05780501', 'query_rule': 'hex_string', 'description': 'Eight-byte tilt and rollover warning configuration.'},
+ '0465': {'name': 'Stationary Vibration Wakeup Level for 16g Range',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '02', 'default': 2,
+          'query_rule': 'hex_to_int',
+          'description': 'Stationary mode. Valid levels 0x01-0x06 represent 128, 256, 384, 640, 896, and 1280 mg.'},
+ '0466': {'name': 'VIN Code Setting',
+          'length': None, 'length_type': 'dynamic', 'default_hex': '00', 'default': '',
+          'query_rule': 'hex_to_ascii_dynamic_len', 'description': 'L + ASCII VIN. L=0 means no VIN.'},
+ '0467': {'name': 'BLE FLS Settings',
+          'length': None, 'length_type': 'dynamic', 'default_hex': '0C0000001E000000003C000A00',
+          'default': '0000001E000000003C000A00', 'query_rule': 'parse_raw_hex_with_len',
+          'description': 'Length-prefixed BLE fuel-level-sensor settings.'},
+ '0468': {'name': 'APN Auto Search Enable',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '00', 'default': 0,
+          'query_rule': 'hex_to_int', 'description': '0x00 manual APN, 0x01 automatic APN matching.'},
+ '0469': {'name': 'Motion Vibration Wakeup Level for 16g Range',
+          'length': 1, 'length_type': 'fixed', 'default_hex': '06', 'default': 6,
+          'query_rule': 'hex_to_int',
+          'description': 'Motion mode. Valid levels 0x01-0x09 represent 128, 256, 384, 640, 896, 1280, 1536, 1792, and 2048 mg.'}}
 
 
 # =========================================================
@@ -1208,7 +1305,7 @@ SET_QUERY_CONFIG = {
              'query_rule': 'hex_to_ascii_dynamic_len',
              'set_rule': 'ascii_with_len',
              'set_hex_width': 0,
-             'set_default': 'xatst.richlinkcloud.com:8989'},
+             'set_default': 'Xatst.richlinkcloud.com:8989'},
     '0201': {'name': 'Secondary Server IP Port',
              'length': None,
              'length_type': 'dynamic',
@@ -1342,13 +1439,13 @@ SET_QUERY_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              'set_default': '1,36'},
-    '0233': {'name': 'GL103 tamper warning switch',
-             'length': 1,
+    '0233': {'name': 'Device Tamper Warning Configuration',
+             'length': 2,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             'set_default': '0101'},
     '0235': {'name': 'GL103 Workmode2 wakeup interval',
              'length': 1,
              'length_type': 'fixed',
@@ -1359,17 +1456,17 @@ SET_QUERY_CONFIG = {
     '0236': {'name': 'Temperature safety range',
              'length': 4,
              'length_type': 'fixed',
-             'query_rule': 'two_int_from_hex4',
-             'set_rule': 'two_int_to_hex4',
+             'query_rule': 'two_int_from_hex4_x0.1_offset_-40',
+             'set_rule': 'two_int_to_hex4_x0.1_offset_-40',
              'set_hex_width': 8,
-             'set_default': '30|40'},
-    '0237': {'name': 'Temperature warning switch',
-             'length': 1,
+             'set_default': '-1|26'},
+    '0237': {'name': 'Temperature Warning Configuration',
+             'length': 2,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             'set_default': '0101'},
     '0238': {'name': 'GL103 Workmode3 interval',
              'length': 1,
              'length_type': 'fixed',
@@ -1377,13 +1474,13 @@ SET_QUERY_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              'set_default': '15,180'},
-    '0239': {'name': 'Air pressure warning switch',
-             'length': 1,
+    '0239': {'name': 'Air Pressure Warning Configuration',
+             'length': 2,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             'set_default': '0101'},
     '023A': {'name': 'Air pressure warning threshold',
              'length': 2,
              'length_type': 'fixed',
@@ -1405,13 +1502,13 @@ SET_QUERY_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 4,
              'set_default': '1,1440'},
-    '023D': {'name': 'GL103 ambient light warning switch',
-             'length': 1,
+    '023D': {'name': 'Ambient Light Warning Configuration',
+             'length': 2,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             'set_default': '0101'},
     '0240': {'name': 'Wifi SSID 5GHz',
              'length': None,
              'length_type': 'dynamic',
@@ -1439,7 +1536,7 @@ SET_QUERY_CONFIG = {
              'query_rule': 'parse_apn_user_pass',
              'set_rule': 'apn_user_pass',
              'set_hex_width': 0,
-             'set_default': 'cmnet,admin,123456'},
+             'set_default': 'cmnet,admin,123456,2'},
     '0252': {'name': 'BLE Tire sensor function switch',
              'length': 1,
              'length_type': 'fixed',
@@ -1467,14 +1564,14 @@ SET_QUERY_CONFIG = {
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             'set_default': '0,1'},
+             'set_default': '1'},
     '0256': {'name': 'GL103 Air Pressure report switch',
              'length': 1,
              'length_type': 'fixed',
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             'set_default': '0,1'},
+             'set_default': '1'},
     '0257': {'name': 'GL103 Workmode4 wake-up interval',
              'length': 1,
              'length_type': 'fixed',
@@ -1512,7 +1609,7 @@ SET_QUERY_CONFIG = {
              'set_default': '1,168'},
     '0275': {'name': 'Router Log report switch',
              'length': 1,
-             'length_type': 'dynamic',
+             'length_type': 'fixed',
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
@@ -1584,20 +1681,20 @@ SET_QUERY_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              'set_default': '0,1,2'},
-    '0418': {'name': 'Humidity warning switch',
-             'length': 1,
+    '0418': {'name': 'Humidity Warning Configuration',
+             'length': 2,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             'set_default': '0101'},
     '0419': {'name': 'Humidity safety range',
              'length': 4,
              'length_type': 'fixed',
-             'query_rule': 'two_int_from_hex4',
-             'set_rule': 'two_int_to_hex4',
+             'query_rule': 'two_int_from_hex4_x0.1_offset_0',
+             'set_rule': 'two_int_to_hex4_x0.1_offset_0',
              'set_hex_width': 8,
-             'set_default': '300|1000'},
+             'set_default': '20|90'},
     '041B': {'name': 'GPS debug message switch',
              'length': 1,
              'length_type': 'fixed',
@@ -1709,7 +1806,7 @@ SET_QUERY_CONFIG = {
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             'set_default': '0,1'},
+             'set_default': '1'},
     '042F': {'name': 'Sensor Coordinate System',
              'length': 1,
              'length_type': 'fixed',
@@ -1773,13 +1870,13 @@ SET_QUERY_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              'set_default': '0,1'},
-    '0438': {'name': 'Asensor Data warning switch',
-             'length': 1,
+    '0438': {'name': 'Shock Warning Configuration for GL109-G',
+             'length': 8,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 16,
+             'set_default': '0114285078B40301'},
     '0439': {'name': 'Geo-fence Check Interval',
              'length': 4,
              'length_type': 'fixed',
@@ -1787,20 +1884,20 @@ SET_QUERY_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 8,
              'set_default': '8,84600'},
-    '043A': {'name': 'GPS Data report switch',
-             'length': 1,
+    '043A': {'name': 'GNSS Location Configuration',
+             'length': 3,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1'},
-    '043B': {'name': 'LBS Data report switch',
-             'length': 1,
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 6,
+             'set_default': '010257'},
+    '043B': {'name': 'LBS Location Configuration',
+             'length': 10,
              'length_type': 'fixed',
-             'query_rule': 'hex_to_int',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             'set_default': '0,1,2'},
+             'query_rule': 'hex_string',
+             'set_rule': 'hex_string',
+             'set_hex_width': 20,
+             'set_default': '010100B40100B40100B4'},
     '043C': {'name': 'Location Data report switch',
              'length': 1,
              'length_type': 'fixed',
@@ -1828,7 +1925,7 @@ SET_QUERY_CONFIG = {
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             'set_default': '0,1'},
+             'set_default': '1'},
     '0440': {'name': 'GL103 Default Mode Report Interval',
              'length': 1,
              'length_type': 'fixed',
@@ -1842,7 +1939,7 @@ SET_QUERY_CONFIG = {
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             'set_default': '1,30'},
+             'set_default': '2,30'},
     '0442': {'name': 'GL103 Motion Mode Report Interval',
              'length': 2,
              'length_type': 'fixed',
@@ -1856,7 +1953,122 @@ SET_QUERY_CONFIG = {
              'query_rule': 'hex_to_int',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             'set_default': '1,30'}
+             'set_default': '2,30'},
+    '0227': {'name': 'Relay control',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,1'},
+    '0259': {'name': 'Enable/Disable the humidity report',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '1'},
+    '0300': {'name': 'System time Sync Up',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '564EB453'},
+    '030D': {'name': 'Rollover report settings (GT160_G)',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '013C1402'},
+    '0445': {'name': 'FOTA package install timing',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,1'},
+    '0449': {'name': 'GNSS drift suppression',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '1'},
+    '044A': {'name': 'Beacon Scan Settings',
+             'length': None, 'length_type': 'dynamic', 'query_rule': 'parse_raw_hex_with_len',
+             'set_rule': 'set_raw_hex_with_len', 'set_hex_width': 0, 'set_default': '0000'},
+    '044B': {'name': 'WiFi Mode',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,1'},
+    '044C': {'name': 'WiFi AP List',
+             'length': None, 'length_type': 'dynamic', 'query_rule': 'parse_raw_hex_with_len',
+             'set_rule': 'set_raw_hex_with_len', 'set_hex_width': 0, 'set_default': '00'},
+    '044D': {'name': 'Enable IGN for pre-ign detection',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,1'},
+    '044E': {'name': 'CAN2 Function Selection for GT118',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,1'},
+    '044F': {'name': 'Encryption Type',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,255'},
+    '0450': {'name': 'Accumulated Mileage Base',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '00000000'},
+    '0451': {'name': 'Severe rapid acceleration event settings',
+             'length': 2, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '0128'},
+    '0452': {'name': 'Severe rapid deceleration event settings',
+             'length': 2, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '0132'},
+    '0453': {'name': 'Deceleration without brake event settings',
+             'length': 3, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 6, 'set_default': '010A0A'},
+    '0454': {'name': 'Severe sharp turn event settings',
+             'length': 2, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '0132'},
+    '0455': {'name': 'High-speed sharp turn event settings',
+             'length': 3, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 6, 'set_default': '01281E'},
+    '0456': {'name': 'Rapid start event settings',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '01140314'},
+    '0457': {'name': 'Rapid stop event settings',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '01140314'},
+    '0458': {'name': 'Throttle stomp event settings',
+             'length': 7, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 14, 'set_default': '01283C46030A14'},
+    '0459': {'name': 'Frequent braking event settings',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '013C0814'},
+    '045A': {'name': 'Long-time idle event settings',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '01060C15'},
+    '045B': {'name': 'Excessive idle ratio event settings',
+             'length': 5, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '0114003C3C'},
+    '045C': {'name': 'High RPM driving event settings',
+             'length': 6, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 12, 'set_default': '010507D00A14'},
+    '045D': {'name': 'High RPM at idle event settings',
+             'length': 5, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '0105DC0A14'},
+    '045E': {'name': 'High engine load event settings',
+             'length': 5, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '01550A5F14'},
+    '045F': {'name': 'Inefficient driving event settings',
+             'length': 7, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 14, 'set_default': '01006400640114'},
+    '0460': {'name': 'Low-speed frequent stop-start event settings',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '010A0203'},
+    '0461': {'name': 'Excessive speed fluctuation event settings',
+             'length': 3, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 6, 'set_default': '01141E'},
+    '0462': {'name': 'Ignition Source Setting',
+             'length': 2, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '001F'},
+    '0463': {'name': 'Emergency Tracking Mode Configuration',
+             'length': 4, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '003C0310'},
+    '0464': {'name': 'Tilt Warning Configuration',
+             'length': 8, 'length_type': 'fixed', 'query_rule': 'hex_string',
+             'set_rule': 'hex_string', 'set_hex_width': 16, 'set_default': '011E053C05780501'},
+    '0465': {'name': 'Stationary Vibration Wakeup Level for 16g Range',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '1,6'},
+    '0466': {'name': 'VIN Code Setting',
+             'length': None, 'length_type': 'dynamic', 'query_rule': 'hex_to_ascii_dynamic_len',
+             'set_rule': 'ascii_with_len', 'set_hex_width': 0, 'set_default': 'LV098900SDER78988'},
+    '0467': {'name': 'BLE FLS Settings',
+             'length': None, 'length_type': 'dynamic', 'query_rule': 'parse_raw_hex_with_len',
+             'set_rule': 'set_raw_hex_with_len', 'set_hex_width': 0,
+             'set_default': '0000001E000000003C000A00'},
+    '0468': {'name': 'APN Auto Search Enable',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '1'},
+    '0469': {'name': 'Motion Vibration Wakeup Level for 16g Range',
+             'length': 1, 'length_type': 'fixed', 'query_rule': 'hex_to_int',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '1,9'}
 }
 
 # =========================================================
@@ -2024,30 +2236,30 @@ ILLEGAL_SET_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              "set_default": "0,37"},
-    '0233': {'name': 'GL103 tamper warning switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
+    '0233': {'name': 'Device Tamper Warning Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             "set_default": "0201"},
     '0235': {'name': 'GL103 Workmode2 wakeup interval illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              "set_default": "0,25"},
     '0236': {'name': 'Temperature safety range illegal',
-             'set_rule': 'two_int_to_hex4',
+             'set_rule': 'hex_string',
              'set_hex_width': 8,
-             "set_default": "0|65535"},
-    '0237': {'name': 'Temperature warning switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
+             "set_default": "028A017C"},
+    '0237': {'name': 'Temperature Warning Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             "set_default": "0201"},
     '0238': {'name': 'GL103 Workmode3 interval illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              "set_default": "14,181"},
-    '0239': {'name': 'Air pressure warning switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
+    '0239': {'name': 'Air Pressure Warning Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             "set_default": "0200"},
     '023A': {'name': 'Air pressure warning threshold illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 4,
@@ -2060,10 +2272,10 @@ ILLEGAL_SET_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 4,
              "set_default": "0,1441"},
-    '023D': {'name': 'GL103 ambient light warning switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
+    '023D': {'name': 'Ambient Light Warning Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             "set_default": "0201"},
     '0240': {'name': 'Wifi SSID 5GHz illegal',
              'set_rule': 'ascii_with_len',
              'set_hex_width': 0,
@@ -2077,7 +2289,7 @@ ILLEGAL_SET_CONFIG = {
              'set_hex_width': 2,
              "set_default": "19,121"},
     '024A': {'name': 'APN Setting 2 illegal',
-             'set_rule': 'apn_user_pass',
+             'set_rule': 'apn_user_pass_unchecked',
              'set_hex_width': 0,
              "set_default": "cmnetcmnetcmnetcmnetcmnetcmnetcmnetcmnetcmnetcmnet,admin,123456"},
     '0252': {'name': 'BLE Tire sensor function switch illegal',
@@ -2121,8 +2333,8 @@ ILLEGAL_SET_CONFIG = {
              'set_hex_width': 2,
              "set_default": "0,169"},
     '0275': {'name': 'Router Log report switch illegal',
-             'set_rule': 'ascii_with_len',
-             'set_hex_width': 0,
+             'set_rule': 'int_to_hex',
+             'set_hex_width': 2,
              "set_default": "2,3"},
     '0276': {'name': 'Auto SIM switch enable illegal',
              'set_rule': 'int_to_hex',
@@ -2164,14 +2376,14 @@ ILLEGAL_SET_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              "set_default": "3,4"},
-    '0418': {'name': 'Humidity warning switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
+    '0418': {'name': 'Humidity Warning Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 4,
+             "set_default": "0201"},
     '0419': {'name': 'Humidity safety range illegal',
-             'set_rule': 'two_int_to_hex4',
+             'set_rule': 'hex_string',
              'set_hex_width': 8,
-             "set_default": "300|65535"},
+             "set_default": "03E8012C"},
     '041B': {'name': 'GPS debug message switch illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
@@ -2272,22 +2484,22 @@ ILLEGAL_SET_CONFIG = {
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
              "set_default": "2,3"},
-    '0438': {'name': 'Asensor Data warning switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
+    '0438': {'name': 'Shock Warning Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 16,
+             "set_default": "0214285078B40301"},
     '0439': {'name': 'Geo-fence Check Interval illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 8,
              "set_default": "7,84601"},
-    '043A': {'name': 'GPS Data report switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "2,3"},
-    '043B': {'name': 'LBS Data report switch illegal',
-             'set_rule': 'int_to_hex',
-             'set_hex_width': 2,
-             "set_default": "3,4"},
+    '043A': {'name': 'GNSS Location Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 6,
+             "set_default": "02003C"},
+    '043B': {'name': 'LBS Location Configuration illegal',
+             'set_rule': 'hex_string',
+             'set_hex_width': 20,
+             "set_default": "0201003C0100B400003C"},
     '043C': {'name': 'Location Data report switch illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
@@ -2319,8 +2531,272 @@ ILLEGAL_SET_CONFIG = {
     '0443': {'name': 'GL103 Motion Mode Data Collection Num illegal',
              'set_rule': 'int_to_hex',
              'set_hex_width': 2,
-             "set_default": "0,31"}
+             "set_default": "0,31"},
+    '0227': {'name': 'Relay control illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '0259': {'name': 'Humidity report switch illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '030D': {'name': 'Rollover report settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '023C1402'},
+    '0445': {'name': 'FOTA package install timing illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '0449': {'name': 'GNSS drift suppression illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '044A': {'name': 'Beacon Scan Settings illegal',
+             'set_rule': 'set_raw_hex_with_len', 'set_hex_width': 0, 'set_default': '0200'},
+    '044B': {'name': 'WiFi Mode illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '044C': {'name': 'WiFi AP List illegal',
+             'set_rule': 'set_raw_hex_with_len', 'set_hex_width': 0, 'set_default': '0B'},
+    '044D': {'name': 'Pre-ign IGN switch illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '044E': {'name': 'CAN2 Function Selection illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '044F': {'name': 'Encryption Type illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,1'},
+    '0450': {'name': 'Accumulated Mileage Base illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '0000000000'},
+    '0451': {'name': 'Severe rapid acceleration settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '0228'},
+    '0452': {'name': 'Severe rapid deceleration settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '0232'},
+    '0453': {'name': 'Deceleration without brake settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 6, 'set_default': '020A0A'},
+    '0454': {'name': 'Severe sharp turn settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': '0232'},
+    '0455': {'name': 'High-speed sharp turn settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 6, 'set_default': '02281E'},
+    '0456': {'name': 'Rapid start settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '02140314'},
+    '0457': {'name': 'Rapid stop settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '02140314'},
+    '0458': {'name': 'Throttle stomp settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 14, 'set_default': '02283C46030A14'},
+    '0459': {'name': 'Frequent braking settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '023C0814'},
+    '045A': {'name': 'Long-time idle settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '02060C15'},
+    '045B': {'name': 'Excessive idle ratio settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '0214003C3C'},
+    '045C': {'name': 'High RPM driving settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 12, 'set_default': '020507D00A14'},
+    '045D': {'name': 'High RPM at idle settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '0205DC0A14'},
+    '045E': {'name': 'High engine load settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 10, 'set_default': '02550A5F14'},
+    '045F': {'name': 'Inefficient driving settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 14, 'set_default': '02006400640114'},
+    '0460': {'name': 'Low-speed frequent stop-start settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '020A0203'},
+    '0461': {'name': 'Excessive speed fluctuation settings illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 6, 'set_default': '02141E'},
+    '0462': {'name': 'Ignition Source Setting illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 4, 'set_default': 'FFFF'},
+    '0463': {'name': 'Emergency Tracking Mode Configuration illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 8, 'set_default': '0000050F'},
+    '0464': {'name': 'Tilt Warning Configuration illegal',
+             'set_rule': 'hex_string', 'set_hex_width': 16, 'set_default': '021E053C05780501'},
+    '0465': {'name': 'Stationary Vibration Wakeup Level illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,7'},
+    '0467': {'name': 'BLE FLS Settings illegal',
+             'set_rule': 'set_raw_hex_with_len', 'set_hex_width': 0, 'set_default': '00'},
+    '0468': {'name': 'APN Auto Search Enable illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '2,3'},
+    '0469': {'name': 'Motion Vibration Wakeup Level illegal',
+             'set_rule': 'int_to_hex', 'set_hex_width': 2, 'set_default': '0,10'}
 }
+
+
+# Built-in parameter names use one Chinese translation per KEY so the three
+# modes stay consistent while retaining their original English descriptions.
+PARAMETER_NAME_ZH = {
+    '0001': '急加速阈值',
+    '0002': '急减速阈值',
+    '0003': '急转弯阈值',
+    '0004': '疲劳驾驶时长',
+    '0005': '超速阈值',
+    '0006': '低车辆电池电压报警阈值（12V）',
+    '0007': '振动唤醒等级',
+    '0008': '疑似碰撞阈值',
+    '0009': '怠速超时阈值',
+    '000B': 'GPS上报频率1',
+    '000C': '车辆数据上报频率',
+    '000D': '唤醒干扰信息上报时间',
+    '000E': '心跳周期（周期唤醒）',
+    '000F': '车辆排放设置',
+    '0010': 'CAN功能开关',
+    '0012': '自动启停系统设置',
+    '0016': '无应答恢复出厂设置',
+    '0017': '无应答重启',
+    '0018': '熄火后工作时长',
+    '0200': '主服务器IPv4地址和端口',
+    '0201': '备用服务器地址和端口',
+    '0202': '2.4GHz Wi-Fi名称',
+    '0203': '2.4GHz Wi-Fi密码',
+    '0204': 'Wi-Fi路由器APN',
+    '0206': '调制解调器APN',
+    '0207': '2.4GHz Wi-Fi开关',
+    '020F': '点火状态判定',
+    '0220': '24V低电压报警阈值',
+    '0223': 'BLE配件UUID过滤条件',
+    '0224': 'BLE配件本地名称过滤条件',
+    '0225': 'BLE胎压传感器上报频率',
+    '0227': '继电器控制',
+    '0228': '常规传感器数据上报开关',
+    '0229': '事件传感器数据上报开关',
+    '022A': 'GPS上报频率2',
+    '022B': 'GPS上报频率3',
+    '022C': '传感器调试数据消息上报开关',
+    '0230': '干扰检测事件开关',
+    '0231': 'GL103工作模式开关',
+    '0232': 'GL103工作模式1唤醒间隔',
+    '0233': '设备防拆报警配置',
+    '0235': 'GL103工作模式2唤醒间隔',
+    '0236': '温度报警安全范围',
+    '0237': '温度报警配置',
+    '0238': 'GL103工作模式3切换间隔',
+    '0239': '气压报警配置',
+    '023A': '气压报警阈值',
+    '023B': 'AGPS服务器地址和端口',
+    '023C': '路由器GPS上报频率',
+    '023D': '环境光报警配置',
+    '0240': '5GHz Wi-Fi名称',
+    '0241': '5GHz Wi-Fi密码',
+    '0247': '内置电池电压报警阈值',
+    '024A': 'APN设置2',
+    '0250': '有应答恢复出厂设置',
+    '0251': '有应答重启',
+    '0252': 'BLE胎压传感器功能开关',
+    '0253': 'GL103跟踪模式开关',
+    '0254': 'GL103工作模式4扫描MAC地址',
+    '0255': 'GL103温度上报开关',
+    '0256': 'GL103气压上报开关',
+    '0257': 'GL103工作模式4唤醒间隔',
+    '0259': '湿度上报开关',
+    '0270': 'Wi-Fi开关',
+    '0271': '路由器GPS上报开关',
+    '0272': '路由器调制解调器芯片温度报警阈值',
+    '0273': '路由器软件复位',
+    '0274': '路由器更新包检查间隔',
+    '0275': '路由器日志上报开关',
+    '0276': '自动切换至SIM1开关',
+    '0277': '自动SIM卡切换间隔',
+    '0278': '路由器心跳间隔',
+    '0279': '路由器日志级别',
+    '0300': '系统时间同步',
+    '0303': 'MCU日志上报',
+    '030D': '侧翻上报设置（GT160_G）',
+    '0407': '备用服务器IPv4地址和端口',
+    '040D': '终止当前MCU FOTA任务',
+    '0414': '5GHz Wi-Fi开关',
+    '0415': 'RS485温湿度数据上报间隔',
+    '0416': 'RS485温湿度数据上报开关',
+    '0417': '休眠模式',
+    '0418': '湿度报警配置',
+    '0419': '湿度报警安全范围',
+    '041A': '强制传感器重新学习',
+    '041B': 'GPS调试消息上报开关',
+    '041C': '主电源断开后的设备工作模式',
+    '041D': '长期拔出跟踪模式休眠唤醒周期',
+    '041E': '设备自检',
+    '041F': 'BLE胎压报警上报开关',
+    '0420': 'BLE胎压低压报警阈值',
+    '0421': 'CAN参数支持状态上报开关',
+    '0422': '单总线iButton/RFID读卡器使用场景设置',
+    '0425': 'BLE温湿度数据上报间隔',
+    '0426': 'BLE温湿度数据上报开关',
+    '0427': 'BLE温湿度传感器型号选择',
+    '0428': 'BLE资产标签数据上报开关',
+    '0429': 'BLE资产标签型号选择',
+    '042A': 'BLE资产标签数据上报间隔',
+    '042C': '开关量输入检测上报开关',
+    '042D': '脉冲检测上报开关',
+    '042E': 'GL103移动检测开关',
+    '042F': '传感器坐标系配置',
+    '0430': 'GL103 NTN网络类型设置',
+    '0431': 'GL103 NTN网络切换GPS距离',
+    '0432': '开关量输入检测IO配置',
+    '0433': '脉冲检测IO配置',
+    '0434': 'BLE继电器设备绑定',
+    '0435': '设备LED控制',
+    '0436': 'SOS报警检测输入配置',
+    '0437': '少量传感器数据消息上报开关',
+    '0438': 'GL109-G冲击报警配置',
+    '0439': '电子围栏检查间隔',
+    '043A': 'GNSS定位配置',
+    '043B': 'LBS定位配置',
+    '043C': '定位数据消息上报开关',
+    '043D': '原始CAN帧消息主动上报开关',
+    '043E': '可配置数据流消息上报间隔',
+    '043F': 'AGPS功能开关',
+    '0440': 'GL103默认模式上报间隔',
+    '0441': 'GL103默认模式数据采集数量',
+    '0442': 'GL103运动模式上报间隔',
+    '0443': 'GL103运动模式数据采集数量',
+    '0445': 'FOTA包安装时机',
+    '0449': 'GNSS漂移抑制',
+    '044A': 'Beacon扫描设置',
+    '044B': 'Wi-Fi模式',
+    '044C': 'Wi-Fi接入点列表',
+    '044D': '预点火检测IGN使能',
+    '044E': 'GT118 CAN2功能选择',
+    '044F': '加密类型',
+    '0450': '累计里程基值',
+    '0451': '严重急加速事件设置',
+    '0452': '严重急减速事件设置',
+    '0453': '无制动减速事件设置',
+    '0454': '严重急转弯事件设置',
+    '0455': '高速急转弯事件设置',
+    '0456': '快速起步事件设置',
+    '0457': '急停事件设置',
+    '0458': '猛踩油门事件设置',
+    '0459': '频繁制动事件设置',
+    '045A': '长时间怠速事件设置',
+    '045B': '怠速占比过高事件设置',
+    '045C': '高转速行驶事件设置',
+    '045D': '怠速高转速事件设置',
+    '045E': '发动机高负荷事件设置',
+    '045F': '低效驾驶事件设置',
+    '0460': '低速频繁启停事件设置',
+    '0461': '车速波动过大事件设置',
+    '0462': '点火源设置',
+    '0463': '紧急跟踪模式配置',
+    '0464': '倾斜报警配置',
+    '0465': '静止模式16g振动唤醒等级',
+    '0466': 'VIN码设置',
+    '0467': 'BLE油位传感器设置',
+    '0468': 'APN自动搜索开关',
+    '0469': '运动模式16g振动唤醒等级',
+    'F000': '恢复默认值',
+}
+
+
+def apply_bilingual_parameter_names():
+    """Use one protocol name for the same KEY in all three modes."""
+    configs = (DEFAULT_QUERY_CONFIG, SET_QUERY_CONFIG, ILLEGAL_SET_CONFIG)
+    configured_keys = set().union(*(config.keys() for config in configs))
+    missing_keys = sorted(configured_keys - PARAMETER_NAME_ZH.keys())
+    if missing_keys:
+        raise RuntimeError(f"缺少参数中文名称：{', '.join(missing_keys)}")
+
+    protocol_english_names = {}
+    for key in configured_keys:
+        source = DEFAULT_QUERY_CONFIG.get(key) or SET_QUERY_CONFIG.get(key)
+        if source is None:
+            source = ILLEGAL_SET_CONFIG[key]
+        english_name = source["name"].strip()
+        if english_name.lower().endswith(" illegal"):
+            english_name = english_name[:-len(" illegal")].rstrip()
+        protocol_english_names[key] = english_name
+
+    for config in configs:
+        for key, item in config.items():
+            chinese_name = PARAMETER_NAME_ZH[key]
+            english_name = protocol_english_names[key]
+            item["name"] = f"{chinese_name}（{english_name}）"
+
+
+apply_bilingual_parameter_names()
 
 
 # =========================================================
@@ -2339,13 +2815,17 @@ PROJECT_KEYS = {
         '0207', '020F', '0220', '0223', '0224', '0225', '0227', '0228', '0229', '022A',
         '022B', '022C', '0230', '0231', '0232', '0233', '0235', '0236', '0237', '0238',
         '0239', '023A', '023B', '023C', '023D', '0240', '0241', '0247', '024A', '0252',
-        '0253', '0254', '0255', '0256', '0257', '0270', '0271', '0272', '0274', '0275',
-        '0276', '0277', '0278', '0279', '0300', '0407', '0415', '0416', '0417', '0418',
+        '0253', '0254', '0255', '0256', '0257', '0259', '0270', '0271', '0272', '0274',
+        '0275', '0276', '0277', '0278', '0279', '0300', '030D', '0407', '0415', '0416',
+        '0417', '0418',
         '0419', '041B', '041C', '041D', '041F', '0420', '0421', '0422', '0425', '0427',
         '0429', '0426', '0428', '042A', '042C', '042D', '042E', '042F', '0430', '0431',
         '0432', '0433', '0434', '0435', '0436', '0437', '0438', '0439', '043A', '043B',
         '043C', '043D', '043E', '043F', '0440', '0441', '0442', '0443', '0444', '0445',
-        '0449', '044A', '044B', '044C'
+        '0449', '044A', '044B', '044C', '044D', '044E', '044F', '0450', '0451', '0452',
+        '0453', '0454', '0455', '0456', '0457', '0458', '0459', '045A', '045B', '045C',
+        '045D', '045E', '045F', '0460', '0461', '0462', '0463', '0464', '0465', '0466',
+        '0467', '0468'
     ],
     'mojio': [
         '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '000B',
@@ -2365,6 +2845,12 @@ PROJECT_KEYS = {
         '0239', '023A', '023B', '023D', '0247', '024A', '0253', '0254', '0255', '0256',
         '0257', '042E', '0430', '0431', '0438', '043A', '043B', '043C', '0440', '0441',
         '0442', '0443', '0444', '044A'
+    ],
+    'GL109-G': [
+        '0200', '0233', '0236', '0237', '0239', '023A', '023B', '023D', '024A',
+        '0255', '0256', '0259', '0418', '0419', '042E', '0438', '043A', '043B',
+        '043F', '0440', '0441', '0442', '0443', '0449', '044A', '0463', '0464',
+        '0465', '0468', '0469'
     ],
     'GD201': [
         '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '000B',
@@ -2427,6 +2913,13 @@ PROJECT_KEYS = {
         '000D', '000E', '0012', '0018', '0200', '0206', '0220', '0225', '0228', '0229',
         '022A', '022B', '023B', '0252'
     ],
+    'GT160_G': [
+        '0220', '044D', '0462', '000B', '022B', '022A', '041B', '0417', '0449', '0001',
+        '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '000C', '000E',
+        '0018', '0228', '0229', '0435', '044F', '0450', '0407', '024A', '0200', '043F',
+        '023B', '0230', '0418', '0237', '0419', '0236', '0425', '0426', '0427', '042A',
+        '0428', '0429', '0252', '0225', '041F', '0420', '0434', '0432', '0433', '0436'
+    ],
     'GT161': [
         '0001', '0002', '0003', '0004', '0005', '0006', '0007', '0008', '0009', '000B',
         '000C', '000D', '000E', '0012', '0018', '0200', '0206', '0220', '0225', '0227',
@@ -2441,8 +2934,10 @@ PROJECT_KEYS = {
     'GR531': [
         '023C', '0270', '0271', '0272', '0275', '0276', '0277', '0278', '0279'
     ],
-    'TEST-SET':[
-    '024A','0230','0407','023B'
+    'TEST-SET': [
+        '0200', '0233', '0236', '0237', '0239', '023A', '023B', '023D', '024A',
+        '0255', '0256', '0259', '0418', '0419', '042E', '043A', '043B', '043F',
+        '0440', '0441', '0442', '0443', '0449', '0463', '0468'
     ]
 }
 
@@ -2461,6 +2956,9 @@ PROJECT_ILLEGAL_KEYS = {
     project: [key for key in keys if key not in ILLEGAL_EXCLUDE_KEYS]
     for project, keys in PROJECT_KEYS.items()
 }
+
+# GT160_G explicitly supports illegal-value testing for every listed KEY.
+PROJECT_ILLEGAL_KEYS['GT160_G'] = PROJECT_KEYS['GT160_G'][:]
 
 # Imported projects are stored separately so a custom KEY such as 0003 does
 # not overwrite the built-in 0003 definition used by existing projects.
@@ -2519,6 +3017,8 @@ QUERY_RULES = {
     "hex_to_ascii_dynamic_len",
     "ascii_with_len",
     "two_int_from_hex4",
+    "two_int_from_hex4_x0.1_offset_-40",
+    "two_int_from_hex4_x0.1_offset_0",
     "parse_apn_user_pass",
     "parse_raw_hex_with_len",
     "hex_to_int",
@@ -2529,6 +3029,8 @@ QUERY_RULES = {
 FIXED_QUERY_RULES = {
     "hex_string",
     "two_int_from_hex4",
+    "two_int_from_hex4_x0.1_offset_-40",
+    "two_int_from_hex4_x0.1_offset_0",
     "hex_to_int",
     "hex_to_int_x10",
     "hex_to_int_x0.1",
@@ -2546,7 +3048,10 @@ SET_RULES = {
     "hex_string",
     "ascii_with_len",
     "two_int_to_hex4",
+    "two_int_to_hex4_x0.1_offset_-40",
+    "two_int_to_hex4_x0.1_offset_0",
     "apn_user_pass",
+    "apn_user_pass_unchecked",
     "set_raw_hex_with_len",
 }
 
@@ -2664,8 +3169,8 @@ def validate_query_rule_compatibility(length_type, length, query_rule):
             f"length_type={length_type} 与 query_rule={query_rule} 不兼容"
         )
 
-    if query_rule == "two_int_from_hex4" and length != 4:
-        raise ValueError("two_int_from_hex4要求length=4")
+    if query_rule.startswith("two_int_from_hex4") and length != 4:
+        raise ValueError(f"{query_rule}要求length=4")
 
 
 def build_import_config(mode, values):
@@ -2960,26 +3465,51 @@ def encode_set_value(value, rule, width):
             raise ValueError("两个设置值都必须在0-65535范围内")
 
         return format(v1, "04X") + format(v2, "04X")
-    elif rule == "apn_user_pass":
-        """
-        APN,user,password
+    elif re.fullmatch(r"two_int_to_hex4_x0\.1_offset_-?\d+(?:\.\d+)?", rule):
+        parts = [part.strip() for part in str(value).split("|")]
+        if len(parts) != 2:
+            raise ValueError("格式应为 下限|上限，例如 -2|25")
 
-        cmnet,admin,123456
+        offset = Decimal(rule.rsplit("_", 1)[1])
+        raw_values = []
+        try:
+            for part in parts:
+                physical_value = Decimal(part)
+                raw_value = (physical_value - offset) / Decimal("0.1")
+                if raw_value != raw_value.to_integral_value():
+                    raise ValueError("上下限必须按0.1递增")
+                raw_int = int(raw_value)
+                if not 0 <= raw_int <= 0xFFFF:
+                    raise ValueError("换算后的原始值必须在0-65535范围内")
+                raw_values.append(raw_int)
+        except InvalidOperation:
+            raise ValueError("上下限必须是有效数字")
+
+        if raw_values[0] > raw_values[1]:
+            raise ValueError("下限不能大于上限")
+        return "".join(format(raw, "04X") for raw in raw_values)
+    elif rule in ("apn_user_pass", "apn_user_pass_unchecked"):
+        """
+        APN,user,password[,ip_protocol]
+
+        cmnet,admin,123456,2
 
         ->
 
-        1305636D6E65740561646D696E06313233343536
+        1405636D6E65740561646D696E0631323334353602
         """
 
         parts = [s.strip() for s in str(value).split(",")]
 
-        if len(parts) != 3:
-            raise ValueError("格式应为 apn,user,password")
+        if len(parts) not in (3, 4):
+            raise ValueError("格式应为 apn,user,password 或 apn,user,password,ip_protocol")
 
         result = ""
 
-        for text in parts:
+        for text in parts[:3]:
             ascii_bytes = text.encode("ascii")
+            if rule == "apn_user_pass" and len(ascii_bytes) >= 32:
+                raise ValueError("APN、用户名和密码单项必须小于32字节")
             if len(ascii_bytes) > 0xFF:
                 raise ValueError("APN、用户名和密码单项不能超过255字节")
 
@@ -2987,9 +3517,19 @@ def encode_set_value(value, rule, width):
             ascii_hex = ascii_bytes.hex().upper()
             result += length_hex + ascii_hex
 
+        if len(parts) == 4:
+            try:
+                ip_text = parts[3]
+                ip_protocol = int(ip_text[2:], 16) if ip_text.lower().startswith("0x") else int(ip_text, 10)
+            except ValueError:
+                raise ValueError("ip_protocol必须是0、1或2")
+            if ip_protocol not in (0, 1, 2):
+                raise ValueError("ip_protocol必须是0、1或2")
+            result += format(ip_protocol, "02X")
+
         total_len = len(result) // 2
         if total_len > 0xFF:
-            raise ValueError("APN、用户名和密码编码后总长度不能超过255字节")
+            raise ValueError("APN配置编码后总长度不能超过255字节")
         total_len_hex = format(total_len, "02X")
 
         return total_len_hex + result
@@ -3080,38 +3620,52 @@ def parse_query_value(value_hex, rule):
         v2 = int(value_hex[4:8], 16)
 
         return f"{v1}|{v2}"
+    elif re.fullmatch(r"two_int_from_hex4_x0\.1_offset_-?\d+(?:\.\d+)?", rule):
+        if len(value_hex) != 8:
+            return value_hex
 
-    # ========================
-    # 新增：解析 APN+用户+密码 复合格式
-    # ========================
+        offset = Decimal(rule.rsplit("_", 1)[1])
+
+        def decode_part(part):
+            value = Decimal(int(part, 16)) * Decimal("0.1") + offset
+            return format(value.normalize(), "f")
+
+        return f"{decode_part(value_hex[0:4])}|{decode_part(value_hex[4:8])}"
+
     elif rule == "parse_apn_user_pass":
         try:
-            # 第1字节：总长度
+            if len(value_hex) < 2:
+                return value_hex
+
             total_len = int(value_hex[0:2], 16)
+            content_end = 2 + total_len * 2
+            if len(value_hex) != content_end:
+                return value_hex
             ptr = 2
 
-            # A = APN 长度
-            a_len = int(value_hex[ptr:ptr + 2], 16)
-            ptr += 2
-            apn_hex = value_hex[ptr:ptr + a_len * 2]
-            apn = bytes.fromhex(apn_hex).decode("ascii")
-            ptr += a_len * 2
+            fields = []
+            for _ in range(3):
+                if ptr + 2 > content_end:
+                    return value_hex
+                field_len = int(value_hex[ptr:ptr + 2], 16)
+                ptr += 2
+                if field_len >= 32 or ptr + field_len * 2 > content_end:
+                    return value_hex
+                field_hex = value_hex[ptr:ptr + field_len * 2]
+                fields.append(bytes.fromhex(field_hex).decode("ascii"))
+                ptr += field_len * 2
 
-            # B = 用户名长度
-            b_len = int(value_hex[ptr:ptr + 2], 16)
-            ptr += 2
-            user_hex = value_hex[ptr:ptr + b_len * 2]
-            user = bytes.fromhex(user_hex).decode("ascii")
-            ptr += b_len * 2
+            remaining_len = content_end - ptr
+            if remaining_len == 2:
+                ip_protocol = int(value_hex[ptr:ptr + 2], 16)
+                if ip_protocol not in (0, 1, 2):
+                    return value_hex
+                fields.append(str(ip_protocol))
+            elif remaining_len != 0:
+                return value_hex
 
-            # C = 密码长度
-            c_len = int(value_hex[ptr:ptr + 2], 16)
-            ptr += 2
-            pwd_hex = value_hex[ptr:ptr + c_len * 2]
-            pwd = bytes.fromhex(pwd_hex).decode("ascii")
-
-            return f"{apn},{user},{pwd}"
-        except:
+            return ",".join(fields)
+        except Exception:
             return value_hex
     elif rule == "parse_raw_hex_with_len":
         """
@@ -3157,13 +3711,37 @@ def parse_query_value(value_hex, rule):
 
 def compare_value(expected, actual):
     """比对期望值和实际返回值。"""
-    if actual is None or actual == "":
+    if actual is None:
         return "FAIL"
 
     try:
         return "PASS" if float(expected) == float(actual) else "FAIL"
     except Exception:
-        return "PASS" if str(expected).strip() == str(actual).strip() else "FAIL"
+        expected_text = str(expected).strip()
+        actual_text = str(actual).strip()
+
+        # The protocol uses X nibbles where no factory default is defined.
+        if (len(expected_text) == len(actual_text)
+                and re.fullmatch(r"[0-9A-FX]+", expected_text.upper())
+                and re.fullmatch(r"[0-9A-F]+", actual_text.upper())
+                and "X" in expected_text.upper()):
+            matched = all(
+                expected_char == "X" or expected_char == actual_char
+                for expected_char, actual_char in zip(
+                    expected_text.upper(), actual_text.upper()
+                )
+            )
+            return "PASS" if matched else "FAIL"
+
+        # The historical 024A payload omits IP Protocol; it means IPv4v6 (2).
+        expected_parts = expected_text.split(",")
+        actual_parts = actual_text.split(",")
+        if len(expected_parts) == 3 and len(actual_parts) == 4 and actual_parts[3] == "2":
+            return "PASS" if expected_parts == actual_parts[:3] else "FAIL"
+        if len(expected_parts) == 4 and expected_parts[3] == "2" and len(actual_parts) == 3:
+            return "PASS" if expected_parts[:3] == actual_parts else "FAIL"
+
+        return "PASS" if expected_text == actual_text else "FAIL"
 
 
 def send_cmd(imei, cmd):
@@ -3173,7 +3751,7 @@ def send_cmd(imei, cmd):
         "cmd": cmd
     }
 
-    resp = requests.post(SEND_URL, json=payload, timeout=10)
+    resp = requests.post(SEND_URL, json=payload, timeout=(2, 3))
     resp.raise_for_status()
 
     try:
@@ -3192,7 +3770,7 @@ def query_raw_data(imei, start_ms, stop_ms):
         "limit": 10000
     }
 
-    resp = requests.post(QUERY_URL, json=payload, timeout=10)
+    resp = requests.post(QUERY_URL, json=payload, timeout=(2, 3))
     resp.raise_for_status()
     return resp.json()
 
@@ -3390,6 +3968,7 @@ class WorkerThread(QThread):
         # 保存执行日志，执行结束后会和 Excel 同名生成 TXT 文件。
         self.log_lines = []
         self.running = True
+        self.stop_event = threading.Event()
         self.config = config if config is not None else get_current_config(mode)
 
     def add_log(self, text):
@@ -3405,6 +3984,11 @@ class WorkerThread(QThread):
     def stop(self):
         """停止执行。"""
         self.running = False
+        self.stop_event.set()
+
+    def wait_or_stopped(self, seconds):
+        """Wait for a delay, returning immediately when stop is requested."""
+        return self.stop_event.wait(seconds) or not self.running
 
     def run(self):
         """线程入口。"""
@@ -3422,6 +4006,9 @@ class WorkerThread(QThread):
             else:
                 file_name = f"非法值设置_{now_str}.xlsx"
                 self.run_illegal_set()
+
+            if not self.running:
+                self.add_log("任务已停止，正在保存已有结果")
 
             save_path = os.path.join(SAVE_DIR, file_name)
             self.save_excel(save_path)
@@ -3448,6 +4035,9 @@ class WorkerThread(QThread):
             self.add_log(f"开始默认值查询：{name} / KEY={key}")
             result_obj = self.execute_f103_query_once(key, cfg)
 
+            if not self.running:
+                break
+
             if result_obj:
                 actual_value = result_obj["value"]
                 value_hex = result_obj["value_hex"]
@@ -3471,7 +4061,8 @@ class WorkerThread(QThread):
                 compare_result
             ])
 
-            time.sleep(1)
+            if self.wait_or_stopped(1):
+                break
 
     def format_temp_safety_range(self, value_str):
         """
@@ -3504,7 +4095,7 @@ class WorkerThread(QThread):
                 continue
 
             # values = [v.strip() for v in value_text.split(",") if v.strip()]
-            if cfg.get("set_rule") in ["apn_user_pass", "ascii_with_len"]:
+            if cfg.get("set_rule") in ["apn_user_pass", "apn_user_pass_unchecked", "ascii_with_len"]:
                 # 整体字符串，不拆分
                 values = [value_text.strip()]
             else:
@@ -3524,18 +4115,12 @@ class WorkerThread(QThread):
                     result_list.append("FAIL")
                     continue
 
-                try:
-                    self.add_log(f"发送设置命令：KEY={key} 设置值={value} 设置HEX={set_value_hex} CMD={set_cmd}")
-                    send_cmd(self.imei, set_cmd)
-                except Exception as e:
-                    self.add_log(f"设置接口异常：{e}")
-                    actual_value_list.append("")
-                    result_list.append("FAIL")
-                    continue
+                result_obj = self.execute_set_and_query_with_retry(
+                    key, set_cmd, cfg, value, set_value_hex
+                )
 
-                # 设置后等待设备处理，再进入 F103 查询闭环。
-                time.sleep(2)
-                result_obj = self.execute_f103_query_once(key, cfg)
+                if not self.running:
+                    break
 
                 if result_obj:
                     actual_value = result_obj["value"]
@@ -3556,7 +4141,11 @@ class WorkerThread(QThread):
                 )
 
                 self.excel_rows.append([name, key, value, set_value_hex, value_hex, display_value, compare_result])
-                time.sleep(1)
+                if self.wait_or_stopped(1):
+                    break
+
+            if not self.running:
+                break
 
             final_result = "PASS" if result_list and all(r == "PASS" for r in result_list) else "FAIL"
             self.row_signal.emit(row_index, ",".join(actual_value_list), final_result)
@@ -3579,7 +4168,7 @@ class WorkerThread(QThread):
                 self.add_log(f"KEY={key} 未填写非法设置值，跳过")
                 continue
 
-            if cfg.get("set_rule") in ["apn_user_pass", "ascii_with_len"]:
+            if cfg.get("set_rule") in ["apn_user_pass", "apn_user_pass_unchecked", "ascii_with_len"]:
                 values = [value_text.strip()]
             else:
                 values = [v.strip() for v in value_text.split(",") if v.strip()]
@@ -3598,8 +4187,12 @@ class WorkerThread(QThread):
                     result_list.append("FAIL")
                     continue
 
-                self.add_log(f"发送非法值设置命令：KEY={key} 设置值={value} 设置HEX={set_value_hex} CMD={set_cmd}")
-                result_obj = self.execute_f102_status_once(key, set_cmd)
+                result_obj = self.execute_f102_status_once(
+                    key, set_cmd, value, set_value_hex
+                )
+
+                if not self.running:
+                    break
 
                 if result_obj:
                     status_hex = result_obj["status_hex"]
@@ -3617,67 +4210,117 @@ class WorkerThread(QThread):
                 )
 
                 self.excel_rows.append([name, key, value, set_value_hex, status_hex, compare_result])
-                time.sleep(1)
+                if self.wait_or_stopped(1):
+                    break
+
+            if not self.running:
+                break
 
             final_result = "PASS" if result_list and all(r == "PASS" for r in result_list) else "FAIL"
             self.row_signal.emit(row_index, ",".join(status_list), final_result)
 
-    def execute_f103_query_once(self, key, cfg):
+    def execute_set_and_query_with_retry(self, key, set_cmd, cfg, value, set_value_hex):
         """
-        双层重试版本：
-        外层：重试3轮，每轮间隔10秒，每轮重新发送命令
-        内层：原有逻辑不变，发1次 → 查询2次
+        设置与查询：最多执行两轮完整流程。
+        每轮重新发送 F102，等待2秒后发送 F103，并查询 rawData 3次。
+        第一轮无返回时等待40秒，再执行第二轮。
         """
-        outer_retry_max = 5
-        outer_wait_seconds = 10
+        round_max = 2
+        retry_wait_seconds = 40
 
-        for outer_attempt in range(outer_retry_max):
-            if outer_attempt > 0:
+        for round_index in range(round_max):
+            if not self.running:
+                return None
+
+            if round_index > 0:
                 self.add_log(
-                    f"==================== 外层重试：第 {outer_attempt + 1} 轮，等待 {outer_wait_seconds} 秒后重新发送命令 ====================")
-                time.sleep(outer_wait_seconds)
+                    f"==================== 设置与查询第2轮：等待 {retry_wait_seconds} 秒后重新发送 F102 ===================="
+                )
+                if self.wait_or_stopped(retry_wait_seconds):
+                    return None
 
-            # ==================== 内层原有逻辑开始 ====================
-            query_cmd = build_query_cmd(key)
             try:
-                start_ms = utc_ms_now()
-                self.add_log(f"发送查询命令：{query_cmd}")
-                send_cmd(self.imei, query_cmd)
+                self.add_log(
+                    f"发送设置命令（第 {round_index + 1}/{round_max} 轮）："
+                    f"KEY={key} 设置值={value} 设置HEX={set_value_hex} CMD={set_cmd}"
+                )
+                send_cmd(self.imei, set_cmd)
             except Exception as e:
-                self.add_log(f"查询命令发送异常：{e}")
+                if not self.running:
+                    return None
+                self.add_log(f"KEY={key} 第 {round_index + 1} 轮设置接口异常：{e}")
                 continue
 
-            retry_count = 3
-            window_step_ms = 3000
-            result_obj = None
+            if self.wait_or_stopped(2):
+                return None
 
-            for attempt in range(retry_count):
-                stop_ms = start_ms + (attempt + 1) * window_step_ms
-                if attempt == 0:
-                    time.sleep(1)
-                else:
-                    time.sleep(2)
+            result_obj = self.execute_f103_query_once(key, cfg)
+            if result_obj:
+                return result_obj
 
-                try:
-                    self.add_log(f"查询F103 rawData：KEY={key}，start={start_ms}，stop={stop_ms}")
-                    resp_json = query_raw_data(self.imei, start_ms, stop_ms)
-                    raw_list = extract_raw_data_list(resp_json)
-                    result_obj = find_f103_return_value(raw_list, self.imei, key, cfg)
+            if not self.running:
+                return None
+            self.add_log(f"KEY={key} 第 {round_index + 1} 轮设置后未查询到 F103 返回")
 
-                    if result_obj:
-                        self.add_log(f"KEY={key} 查询成功，返回值={result_obj['value']} HEX={result_obj['value_hex']}")
-                        self.add_log(f"✅ KEY={key} 在第 {outer_attempt + 1} 轮查询成功！")
-                        return result_obj
+        self.add_log(f"KEY={key} 设置与查询两轮全部失败，最终无返回值")
+        return None
 
-                    self.add_log(f"KEY={key} 第 {attempt + 1} 次未查询到 F103 返回")
+    def execute_f103_query_once(self, key, cfg):
+        """
+        单轮 F103 查询：发送一次 F103，按1秒、2秒、2秒等待后查询3次。
+        默认值查询只执行这一轮；设置与查询由外层控制两轮完整重发。
+        """
+        if not self.running:
+            return None
 
-                except Exception as e:
-                    self.add_log(f"F103 rawData 查询异常：{e}")
+        query_cmd = build_query_cmd(key)
+        try:
+            start_ms = utc_ms_now()
+            self.add_log(f"发送查询命令：{query_cmd}")
+            send_cmd(self.imei, query_cmd)
+        except Exception as e:
+            if not self.running:
+                return None
+            self.add_log(f"查询命令发送异常：{e}")
+            return None
 
-            self.add_log(f"KEY={key} F103查询失败，无返回值")
-            # ==================== 内层原有逻辑结束 ====================
+        retry_count = 3
+        window_step_ms = 3000
+        wait_seconds_list = (1, 2, 2)
 
-        self.add_log(f"❌ KEY={key} 外层重试 {outer_retry_max} 轮全部失败，最终查询失败")
+        for attempt in range(retry_count):
+            if not self.running:
+                return None
+
+            stop_ms = start_ms + (attempt + 1) * window_step_ms
+            if self.wait_or_stopped(wait_seconds_list[attempt]):
+                return None
+
+            try:
+                if not self.running:
+                    return None
+                self.add_log(f"查询F103 rawData：KEY={key}，start={start_ms}，stop={stop_ms}")
+                resp_json = query_raw_data(self.imei, start_ms, stop_ms)
+                if not self.running:
+                    return None
+                raw_list = extract_raw_data_list(resp_json)
+                result_obj = find_f103_return_value(raw_list, self.imei, key, cfg)
+
+                if result_obj:
+                    self.add_log(
+                        f"KEY={key} 查询成功，返回值={result_obj['value']} "
+                        f"HEX={result_obj['value_hex']}"
+                    )
+                    return result_obj
+
+                self.add_log(f"KEY={key} 第 {attempt + 1} 次未查询到 F103 返回")
+
+            except Exception as e:
+                if not self.running:
+                    return None
+                self.add_log(f"F103 rawData 查询异常：{e}")
+
+        self.add_log(f"KEY={key} F103查询3次失败，无返回值")
         return None
 
     # 原来只查询3次的函数
@@ -3730,45 +4373,75 @@ class WorkerThread(QThread):
     #     self.add_log(f"KEY={key} F103查询失败，无返回值")
     #     return None
 
-    def execute_f102_status_once(self, key, set_cmd):
+    def execute_f102_status_once(self, key, set_cmd, value, set_value_hex):
         """
-        F102 设置状态查询闭环：
-        start_ms 固定，重试时 stop_ms 递增。
+        非法值设置：最多执行两轮完整流程。
+        每轮重新发送 F102，按1秒、2秒、2秒等待后查询3次状态。
+        第一轮无返回时等待40秒，再执行第二轮。
         """
-        try:
-            start_ms = utc_ms_now()
-            send_cmd(self.imei, set_cmd)
-        except Exception as e:
-            self.add_log(f"F102设置命令发送异常：{e}")
-            return None
-
-        retry_count = 2
+        round_max = 2
+        retry_wait_seconds = 40
         window_step_ms = 2000
+        wait_seconds_list = (1, 2, 2)
 
-        for attempt in range(retry_count):
-            stop_ms = start_ms + (attempt + 1) * window_step_ms
+        for round_index in range(round_max):
+            if not self.running:
+                return None
 
-            if attempt == 0:
-                time.sleep(1)
-            else:
-                time.sleep(2)
+            if round_index > 0:
+                self.add_log(
+                    f"==================== 非法值设置第2轮：等待 {retry_wait_seconds} 秒后重新发送 F102 ===================="
+                )
+                if self.wait_or_stopped(retry_wait_seconds):
+                    return None
 
             try:
-                self.add_log(f"查询F102 rawData：KEY={key}，start={start_ms}，stop={stop_ms}")
-                resp_json = query_raw_data(self.imei, start_ms, stop_ms)
-                raw_list = extract_raw_data_list(resp_json)
-                result_obj = find_f102_status_value(raw_list, self.imei, key)
-
-                if result_obj:
-                    self.add_log(f"KEY={key} F102状态返回成功，状态HEX={result_obj['status_hex']}")
-                    return result_obj
-
-                self.add_log(f"KEY={key} 第 {attempt + 1} 次未查询到 F102 状态返回")
-
+                start_ms = utc_ms_now()
+                self.add_log(
+                    f"发送非法值设置命令（第 {round_index + 1}/{round_max} 轮）："
+                    f"KEY={key} 设置值={value} 设置HEX={set_value_hex} CMD={set_cmd}"
+                )
+                send_cmd(self.imei, set_cmd)
             except Exception as e:
-                self.add_log(f"F102 rawData 查询异常：{e}")
+                if not self.running:
+                    return None
+                self.add_log(f"KEY={key} 第 {round_index + 1} 轮 F102设置命令发送异常：{e}")
+                continue
 
-        self.add_log(f"KEY={key} F102状态查询失败，无返回值")
+            for attempt in range(3):
+                if not self.running:
+                    return None
+
+                stop_ms = start_ms + (attempt + 1) * window_step_ms
+                if self.wait_or_stopped(wait_seconds_list[attempt]):
+                    return None
+
+                try:
+                    if not self.running:
+                        return None
+                    self.add_log(f"查询F102 rawData：KEY={key}，start={start_ms}，stop={stop_ms}")
+                    resp_json = query_raw_data(self.imei, start_ms, stop_ms)
+                    if not self.running:
+                        return None
+                    raw_list = extract_raw_data_list(resp_json)
+                    result_obj = find_f102_status_value(raw_list, self.imei, key)
+
+                    if result_obj:
+                        self.add_log(
+                            f"KEY={key} F102状态返回成功，状态HEX={result_obj['status_hex']}"
+                        )
+                        return result_obj
+
+                    self.add_log(f"KEY={key} 第 {attempt + 1} 次未查询到 F102 状态返回")
+
+                except Exception as e:
+                    if not self.running:
+                        return None
+                    self.add_log(f"F102 rawData 查询异常：{e}")
+
+            self.add_log(f"KEY={key} 第 {round_index + 1} 轮 F102状态查询3次失败")
+
+        self.add_log(f"KEY={key} 非法值设置两轮全部失败，无F102状态返回")
         return None
 
     def save_log_txt(self, txt_path):
@@ -3811,6 +4484,38 @@ class WorkerThread(QThread):
 # 九、主界面
 # =========================================================
 
+class SelectAllTableWidget(QTableWidget):
+    """QTableWidget with a custom control in the top-left header corner."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.top_left_widget = None
+
+    def set_top_left_widget(self, widget):
+        self.top_left_widget = widget
+        widget.setParent(self)
+        widget.show()
+        self.position_top_left_widget()
+
+    def position_top_left_widget(self):
+        if self.top_left_widget is None:
+            return
+
+        horizontal_rect = self.horizontalHeader().geometry()
+        vertical_rect = self.verticalHeader().geometry()
+        self.top_left_widget.setGeometry(
+            vertical_rect.x(),
+            horizontal_rect.y(),
+            vertical_rect.width(),
+            horizontal_rect.height(),
+        )
+        self.top_left_widget.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.position_top_left_widget()
+
+
 class ParamToolUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -3821,7 +4526,7 @@ class ParamToolUI(QWidget):
 
     def init_ui(self):
         """初始化界面。"""
-        self.setWindowTitle("参数默认值查询 / 设置与查询 / 非法值设置工具 - Mangetic - 2026-09-17")
+        self.setWindowTitle("参数默认值查询 / 设置与查询 / 非法值设置工具 - GNN - 2026-11-06")
         self.setWindowIcon(QIcon(resource_path(APP_ICON_FILE)))
         self.resize(1300, 700)
 
@@ -3861,8 +4566,19 @@ class ParamToolUI(QWidget):
         top_layout.addWidget(self.start_btn)
         top_layout.addWidget(self.stop_btn)
 
-        self.table = QTableWidget()
+        self.table = SelectAllTableWidget()
         self.table.setColumnCount(6)
+
+        self.select_all_checkbox = QCheckBox()
+        self.select_all_checkbox.setChecked(True)
+        self.select_all_checkbox.setToolTip("全选/全不选参数")
+        self.select_all_checkbox.stateChanged.connect(self.set_all_rows_checked)
+        corner_widget = QWidget()
+        corner_layout = QHBoxLayout(corner_widget)
+        corner_layout.setContentsMargins(0, 0, 0, 0)
+        corner_layout.setAlignment(Qt.AlignCenter)
+        corner_layout.addWidget(self.select_all_checkbox)
+        self.table.set_top_left_widget(corner_widget)
 
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(0, QHeaderView.Fixed)
@@ -3885,14 +4601,9 @@ class ParamToolUI(QWidget):
         self.setLayout(main_layout)
 
     def set_execution_ui_state(self, running):
-        """Lock controls that could rebuild or change the active test table."""
+        """Only switch the execution buttons; keep the page interactive."""
         self.start_btn.setEnabled(not running)
         self.stop_btn.setEnabled(running)
-        self.import_btn.setEnabled(not running)
-        self.project_combo.setEnabled(not running)
-        self.mode_combo.setEnabled(not running)
-        self.imei_input.setEnabled(not running)
-        self.table.setEnabled(not running)
 
     def import_custom_config(self):
         """Import project-specific parameter definitions from Excel."""
@@ -3963,6 +4674,9 @@ class ParamToolUI(QWidget):
         project = self.project_combo.currentText()
 
         self.table.setRowCount(0)
+        self.select_all_checkbox.blockSignals(True)
+        self.select_all_checkbox.setChecked(True)
+        self.select_all_checkbox.blockSignals(False)
 
         if mode == "默认值查询":
             self.table.setHorizontalHeaderLabels(["是否应用", "NAME", "KEY", "默认值", "返回值", "比对结果"])
@@ -3987,6 +4701,7 @@ class ParamToolUI(QWidget):
             check = QCheckBox()
             check.setChecked(True)
             check.setStyleSheet("margin-left:20px;")
+            check.stateChanged.connect(self.update_select_all_checkbox)
 
             self.table.setCellWidget(row, 0, check)
             self.table.setItem(row, 1, QTableWidgetItem(cfg["name"]))
@@ -4008,6 +4723,31 @@ class ParamToolUI(QWidget):
 
             self.table.setItem(row, 4, QTableWidgetItem(""))
             self.table.setItem(row, 5, QTableWidgetItem(""))
+
+        self.update_select_all_checkbox()
+        self.table.position_top_left_widget()
+
+    def set_all_rows_checked(self, state):
+        """Apply the corner checkbox state to every parameter row."""
+        checked = state == Qt.Checked
+        for row in range(self.table.rowCount()):
+            checkbox = self.table.cellWidget(row, 0)
+            if checkbox:
+                checkbox.blockSignals(True)
+                checkbox.setChecked(checked)
+                checkbox.blockSignals(False)
+
+    def update_select_all_checkbox(self, _state=None):
+        """Keep the corner checkbox aligned with the current row selection."""
+        row_count = self.table.rowCount()
+        all_checked = row_count > 0 and all(
+            self.table.cellWidget(row, 0)
+            and self.table.cellWidget(row, 0).isChecked()
+            for row in range(row_count)
+        )
+        self.select_all_checkbox.blockSignals(True)
+        self.select_all_checkbox.setChecked(all_checked)
+        self.select_all_checkbox.blockSignals(False)
 
     def clear_result_before_run(self):
         """开始执行前清空返回值、比对结果和日志。"""
@@ -4069,9 +4809,10 @@ class ParamToolUI(QWidget):
 
     def stop_run(self):
         """停止执行。"""
-        if self.worker:
+        if self.worker and self.worker.isRunning() and self.worker.running:
+            self.stop_btn.setEnabled(False)
             self.worker.stop()
-            self.log("已请求停止，当前步骤执行完成后会停止")
+            self.log("已请求停止，正在结束当前网络请求")
 
     def update_row_result(self, row, value, result):
         """

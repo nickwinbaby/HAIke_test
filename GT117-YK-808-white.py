@@ -6,7 +6,8 @@ JT/T 808 协议 HEX 解析 GUI 工具。
 1. 输入的 HEX 会先自动去掉回车、换行、空格、Tab。
 2. 支持 7E 帧边界、7D01/7D02 转义还原、异或校验。
 3. 解析 JT/T 808-2013 常规消息头，并兼容 2019 版本标识位的头部长度。
-4. 对常见标准消息体做结构化解析，未知消息体保留原始 HEX。
+4. 支持 GOSUCN-808-2013（高新兴瑞联808协议1.0）私有参数、位置附加项与FOTA语义。
+5. 对常见标准消息体做结构化解析，未知消息体保留原始 HEX。
 """
 
 import json
@@ -19,7 +20,7 @@ import queue
 import threading
 import sys
 import tkinter as tk
-from datetime import datetime
+from datetime import datetime, timedelta
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 
@@ -93,6 +94,12 @@ MESSAGE_ID_NAMES = {
     0x8800: "多媒体数据上传应答",
     0x8801: "摄像头立即拍摄命令",
     0x0805: "摄像头立即拍摄命令应答",
+}
+
+GOSUCN_SUPPORTED_MESSAGE_IDS = {
+    0x0001, 0x0002, 0x0100, 0x0102, 0x0104, 0x0107, 0x0108, 0x0200,
+    0x8001, 0x8100, 0x8103, 0x8104, 0x8105, 0x8106, 0x8107,
+    0x8600, 0x8601, 0x8602, 0x8603, 0x8604, 0x8605,
 }
 
 RESULT_NAMES = {
@@ -208,6 +215,43 @@ UPGRADE_TYPE_NAMES = {
     0x34: "卫星定位模块/北斗卫星定位模块",
 }
 
+GOSUCN_UPGRADE_TYPE_NAMES = {
+    0x00: "MCU FOTA",
+    0xF0: "Modem FOTA",
+}
+
+GOSUCN_ALARM_BIT_NAMES = {
+    0: "紧急报警（本协议未实现）",
+    1: "超速报警",
+    2: "疲劳驾驶",
+    3: "危险预警（本协议未实现）",
+    4: "GNSS模块故障（本协议未实现）",
+    5: "GNSS天线未接或被剪断（本协议未实现）",
+    6: "GNSS天线短路（本协议未实现）",
+    7: "终端主电源欠压",
+    8: "终端主电源掉电",
+    9: "终端LCD或显示器故障（本协议未实现）",
+    10: "TTS模块故障（本协议未实现）",
+    11: "摄像头故障（本协议未实现）",
+    12: "道路运输证IC卡模块故障（本协议未实现）",
+    13: "超速预警（本协议未实现）",
+    14: "疲劳驾驶预警（本协议未实现）",
+    18: "当天累计驾驶超时（本协议未实现）",
+    19: "超时停车（本协议未实现）",
+    20: "进出区域",
+    21: "进出路线（本协议未实现）",
+    22: "路段行驶时间不足/过长（本协议未实现）",
+    23: "路线偏离报警（本协议未实现）",
+    24: "车辆VSS故障（本协议未实现）",
+    25: "车辆油量异常（本协议未实现）",
+    26: "车辆被盗（本协议未实现）",
+    27: "车辆非法点火（本协议未实现）",
+    28: "车辆非法位移（本协议未实现）",
+    29: "碰撞预警",
+    30: "侧翻预警（本协议未实现）",
+    31: "非法开门报警（本协议未实现）",
+}
+
 UPGRADE_RESULT_NAMES = {
     0x00: "成功",
     0x01: "失败",
@@ -224,6 +268,49 @@ PHONEBOOK_SETTING_TYPE_NAMES = {
 
 class ParseError(ValueError):
     """用于把解析错误清晰显示到 GUI。"""
+
+
+def add_protocol_warning(result, message):
+    """累积协议合规提示，避免同一帧中的多个问题互相覆盖。"""
+    current = result.get("GOSUCN协议检查提示")
+    if current is None:
+        result["GOSUCN协议检查提示"] = [message]
+    elif isinstance(current, list):
+        if message not in current:
+            current.append(message)
+    elif current != message:
+        result["GOSUCN协议检查提示"] = [current, message]
+
+
+def is_decimal_bcd(data):
+    return all(((byte >> 4) & 0x0F) <= 9 and (byte & 0x0F) <= 9 for byte in data)
+
+
+def is_ascii_alnum(data):
+    try:
+        text = data.decode("ascii")
+    except UnicodeDecodeError:
+        return False
+    return bool(text) and text.isalnum()
+
+
+def validate_bcd_datetime(data):
+    if len(data) != 6 or not is_decimal_bcd(data):
+        return False
+    try:
+        datetime.strptime(bytes_to_bcd(data), "%y%m%d%H%M%S")
+    except ValueError:
+        return False
+    return True
+
+
+def utc_time_text_to_beijing(time_text):
+    """把协议中的 UTC+0 YYMMDDhhmmss 转换为 UTC+8 北京时间。"""
+    try:
+        utc_time = datetime.strptime(str(time_text), "%y%m%d%H%M%S")
+    except (TypeError, ValueError):
+        return ""
+    return (utc_time + timedelta(hours=8)).strftime("%Y-%m-%d %H:%M:%S")
 
 
 def clean_hex_text(text):
@@ -335,10 +422,11 @@ def parse_message_body_property(prop, protocol="2013"):
     prop_hex = f"{prop:04X}"
     encrypt_type = (prop >> 10) & 0x07
     version_flag = protocol == "2019" and bool((prop >> 14) & 0x01)
-    return {
+    protocol_name = protocol_display_name(protocol)
+    result = {
         f"[{prop_hex}]消息体属性HEX": f"0x{prop_hex}",
         f"[{binary}]消息体属性二进制": binary,
-        "协议标准": "JT/T 808-2019" if protocol == "2019" else "JT/T 808-2013",
+        "协议标准": protocol_name,
         "版本号": "JTT2019" if version_flag else ("未启用版本标识" if protocol == "2019" else "不适用"),
         "[bit15]保留": (prop >> 15) & 0x01,
         "[bit14]版本标识" if protocol == "2019" else "[bit14]保留": (prop >> 14) & 0x01,
@@ -346,6 +434,12 @@ def parse_message_body_property(prop, protocol="2013"):
         "[bit10~bit12]数据加密": ENCRYPTION_NAMES.get(encrypt_type, f"Unknown({encrypt_type})"),
         "[bit0~bit9]消息体长度": prop & 0x03FF,
     }
+    if protocol == "gosucn2013":
+        if encrypt_type != 0:
+            add_protocol_warning(result, "本协议不启用RSA/AES加密，bit10～bit12应固定为0。")
+        if (prop >> 14) & 0x03:
+            add_protocol_warning(result, "本协议消息体属性bit14～bit15为保留位，应固定为0。")
+    return result
 
 
 def parse_header(packet_without_checksum, protocol="2013"):
@@ -388,12 +482,16 @@ def parse_header(packet_without_checksum, protocol="2013"):
     header = {
         f"[{msg_id:04X}]消息Id": msg_id,
         "消息名称": MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"),
-        "解析标准": "JT/T 808-2019" if protocol == "2019" else "JT/T 808-2013",
+        "解析标准": protocol_display_name(protocol),
         "消息体属性对象": prop_obj,
     }
     if protocol_version is not None:
         header[f"[{protocol_version:02X}]协议版本号"] = protocol_version
     header[f"[{hex_slice(phone_raw)}]终端手机号"] = phone
+    if protocol == "gosucn2013":
+        header["终端手机号取值规则"] = "SIM卡IMSI后12位，BCD[6]，不补位"
+        if not is_decimal_bcd(phone_raw):
+            add_protocol_warning(header, "消息头终端手机号必须是IMSI后12位的十进制BCD编码。")
     header[f"[{serial:04X}]消息流水号"] = serial
     if package_info:
         header["分包对象"] = package_info
@@ -401,7 +499,7 @@ def parse_header(packet_without_checksum, protocol="2013"):
     return msg_id, body, header
 
 
-def parse_common_response(body, response_name):
+def parse_common_response(body, response_name, protocol="2013"):
     if len(body) != 5:
         return {
             response_name: hex_slice(body),
@@ -410,12 +508,21 @@ def parse_common_response(body, response_name):
     response_serial = int.from_bytes(body[0:2], "big")
     response_msg_id = int.from_bytes(body[2:4], "big")
     result = body[4]
-    return {
+    parsed = {
         response_name: hex_slice(body),
         f"[{body[0:2].hex().upper()}]应答流水号": response_serial,
         f"[{body[2:4].hex().upper()}]应答消息Id": response_msg_id,
         f"[{body[4]:02X}]结果": RESULT_NAMES.get(result, f"Unknown({result})"),
     }
+    if protocol == "gosucn2013" and response_name == "平台通用应答":
+        parsed["GOSUCN报警清零规则"] = (
+            "结果0或4时清除对应需应答后清零的报警；结果1～3不清零"
+        )
+    if protocol == "gosucn2013":
+        maximum = 4 if response_name == "平台通用应答" else 3
+        if result > maximum:
+            add_protocol_warning(parsed, f"{response_name}结果值范围为0～{maximum}，当前为{result}。")
+    return parsed
 
 
 def parse_terminal_register(body, protocol="2013"):
@@ -431,7 +538,11 @@ def parse_terminal_register(body, protocol="2013"):
         model_len = 20
         terminal_id_len = 7
         min_len = 37
-        layout_name = "JT/T 808-2013：制造商ID5字节，型号20字节，终端ID7字节"
+        layout_name = (
+            "GOSUCN-808-2013：制造商ID5字节，型号20字节，终端ID为IMEI后14位BCD[7]"
+            if protocol == "gosucn2013"
+            else "JT/T 808-2013：制造商ID5字节，型号20字节，终端ID7字节"
+        )
 
     if len(body) < min_len:
         result["解析提示"] = f"{layout_name}，最短 {min_len} 字节，当前为 {len(body)} 字节。"
@@ -452,20 +563,63 @@ def parse_terminal_register(body, protocol="2013"):
         f"[{body[2:4].hex().upper()}]市县域ID": city,
         f"[{hex_slice(manufacturer)}]制造商ID": safe_decode(manufacturer),
         f"[{hex_slice(model)}]终端型号": safe_decode(model),
-        f"[{hex_slice(terminal_id)}]终端ID": safe_decode(terminal_id),
+        f"[{hex_slice(terminal_id)}]终端ID": (
+            bytes_to_bcd(terminal_id) if protocol == "gosucn2013" else safe_decode(terminal_id)
+        ),
         f"[{plate_color:02X}]车牌颜色": plate_color,
         f"[{hex_slice(plate)}]车辆标识": safe_decode(plate),
     })
+    if protocol == "gosucn2013":
+        result.update({
+            "GOSUCN字段规则": {
+                "省域ID": "固定为0",
+                "市县域ID": "固定为0",
+                "制造商ID": "ASCII GSR，不足5字节补00",
+                "终端型号": "产品型号ASCII，不足20字节补00",
+                "终端ID": "Modem IMEI后14位，BCD[7]",
+                "车牌颜色": "固定为0",
+                "车辆标识": "VIN；无法获取时填字符0",
+            },
+            "终端ID数字": bytes_to_bcd(terminal_id),
+        })
+        compliance = []
+        if province != 0:
+            compliance.append("省域ID按本协议应固定为0")
+        if city != 0:
+            compliance.append("市县域ID按本协议应固定为0")
+        if decode_trimmed_text(manufacturer) != "GSR":
+            compliance.append("制造商ID按本协议应为ASCII GSR")
+        if plate_color != 0:
+            compliance.append("车牌颜色按本协议应固定为0")
+        if not decode_trimmed_text(model):
+            compliance.append("终端型号应填写产品型号ASCII。")
+        if not plate:
+            compliance.append("车辆标识不可为空；无法获取VIN时应填单个字符0。")
+        for warning in compliance:
+            add_protocol_warning(result, warning)
+        if not is_decimal_bcd(terminal_id):
+            add_protocol_warning(result, "终端ID必须是IMEI后14位的十进制BCD[7]编码。")
     return result
 
 
 def parse_authentication(body, protocol="2013"):
     if protocol != "2019":
-        return {
+        result = {
             "终端鉴权": hex_slice(body),
-            "字段长度布局": "JT/T 808-2013：消息体直接为鉴权码",
+            "字段长度布局": (
+                "GOSUCN-808-2013：消息体直接为ASCII鉴权码"
+                if protocol == "gosucn2013"
+                else "JT/T 808-2013：消息体直接为鉴权码"
+            ),
             f"[{hex_slice(body)}]鉴权码": safe_decode(body),
         }
+        if protocol == "gosucn2013":
+            result["鉴权码规则"] = "ASCII随机字母数字，16～32字节；仅存RAM；每次TCP连接重新注册获取"
+            if not 16 <= len(body) <= 32:
+                add_protocol_warning(result, f"鉴权码长度应为16～32字节，当前为{len(body)}字节。")
+            if body and not is_ascii_alnum(body):
+                add_protocol_warning(result, "鉴权码必须是ASCII随机字母数字。")
+        return result
 
     result = {
         "终端鉴权": hex_slice(body),
@@ -552,6 +706,10 @@ def parse_terminal_property_response(body, protocol="2013"):
         layouts = [
             (30, 30, "JT/T 808-2019：型号30字节，终端ID30字节"),
         ]
+    elif protocol == "gosucn2013":
+        layouts = [
+            (20, 7, "GOSUCN-808-2013：型号20字节，终端ID为IMEI后14位BCD[7]"),
+        ]
     else:
         layouts = [
             (20, 15, "JT/T 808-2013：型号20字节，终端ID15字节"),
@@ -600,7 +758,9 @@ def parse_terminal_property_response(body, protocol="2013"):
         "终端类型说明": terminal_labels,
         f"[{hex_slice(manufacturer_id)}]制造商ID": decode_trimmed_text(manufacturer_id),
         f"[{hex_slice(model)}]终端型号": decode_trimmed_text(model),
-        f"[{hex_slice(terminal_id)}]终端ID": decode_trimmed_text(terminal_id),
+        f"[{hex_slice(terminal_id)}]终端ID": (
+            bytes_to_bcd(terminal_id) if protocol == "gosucn2013" else decode_trimmed_text(terminal_id)
+        ),
         f"[{hex_slice(iccid)}]终端SIM卡ICCID": bytes_to_bcd(iccid),
         f"[{hw_len:02X}]终端硬件版本号长度": hw_len,
         f"[{hex_slice(hw_version)}]终端硬件版本号": decode_trimmed_text(hw_version),
@@ -613,6 +773,23 @@ def parse_terminal_property_response(body, protocol="2013"):
         "通信模块属性对象": comm_bits,
         "通信模块属性说明": comm_labels,
     })
+    if protocol == "gosucn2013":
+        result["终端ID数字"] = bytes_to_bcd(terminal_id)
+        result["终端硬件版本号字段语义"] = "Modem版本号，用于Modem FOTA任务匹配"
+        result["终端固件版本号字段语义"] = "MCU版本号，用于MCU FOTA任务匹配"
+        if decode_trimmed_text(manufacturer_id) != "GSR":
+            add_protocol_warning(result, "制造商ID按本协议应为ASCII GSR。")
+        if not is_decimal_bcd(terminal_id):
+            add_protocol_warning(result, "终端ID必须是IMEI后14位的十进制BCD[7]编码。")
+        allowed_terminal_type_mask = 0x00CF
+        if terminal_type & ~allowed_terminal_type_mask:
+            add_protocol_warning(result, "终端类型出现本协议未定义的置位。")
+        if gnss_attr & ~0x0F:
+            add_protocol_warning(result, "GNSS模块属性仅定义bit0～bit3，其他位应为0。")
+        if comm_attr & ~0xBF:
+            add_protocol_warning(result, "通信模块属性仅定义bit0～bit5和bit7，其他位应为0。")
+        if not is_decimal_bcd(iccid):
+            add_protocol_warning(result, "终端SIM卡ICCID必须是十进制BCD[10]编码。")
     if extra:
         result["扩展数据"] = hex_slice(extra)
     return result
@@ -646,19 +823,27 @@ def parse_upgrade_package(body):
     return result
 
 
-def parse_upgrade_result_notification(body):
+def parse_upgrade_result_notification(body, protocol="2013"):
     result = {"终端升级结果通知": hex_slice(body)}
     if len(body) < 2:
         result["解析提示"] = f"升级结果通知最短 2 字节，当前为 {len(body)} 字节。"
         return result
     upgrade_type, offset = read_u8(body, 0)
     upgrade_result, offset = read_u8(body, offset)
+    upgrade_names = GOSUCN_UPGRADE_TYPE_NAMES if protocol == "gosucn2013" else UPGRADE_TYPE_NAMES
     result.update({
-        f"[{upgrade_type:02X}]升级类型": UPGRADE_TYPE_NAMES.get(upgrade_type, f"Unknown({upgrade_type})"),
+        f"[{upgrade_type:02X}]升级类型": upgrade_names.get(upgrade_type, f"Unknown({upgrade_type})"),
         f"[{upgrade_result:02X}]升级结果": UPGRADE_RESULT_NAMES.get(upgrade_result, f"Unknown({upgrade_result})"),
     })
     if offset < len(body):
         result["扩展数据"] = hex_slice(body[offset:])
+        if protocol == "gosucn2013":
+            add_protocol_warning(result, f"升级结果通知消息体应固定为2字节，当前为{len(body)}字节。")
+    if protocol == "gosucn2013":
+        if upgrade_type not in GOSUCN_UPGRADE_TYPE_NAMES:
+            add_protocol_warning(result, f"升级类型仅支持0x00 MCU或0xF0 Modem，当前为0x{upgrade_type:02X}。")
+        if upgrade_result not in UPGRADE_RESULT_NAMES:
+            add_protocol_warning(result, f"升级结果仅支持0成功、1失败、2取消，当前为{upgrade_result}。")
     return result
 
 
@@ -701,7 +886,11 @@ def format_number(value, digits=4):
 
 LOCATION_EXTRA_PID_COLUMNS = [0x01, 0x02, 0x07, 0x2A, 0x2B, 0x30, 0x31]
 LOCATION_E6_PID_COLUMNS = [0x08, 0x14, 0x15]
-LOCATION_BASE_HEADERS = ["纬度", "经度", "高度", "速度", "方向", "时间", "点火状态", "定位"]
+GOSUCN_LOCATION_EXTRA_PID_COLUMNS = [
+    0x01, 0x02, 0x03, 0x07, 0x12, 0x30, 0x31,
+    0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6,
+]
+LOCATION_BASE_HEADERS = ["纬度", "经度", "高度", "速度", "方向", "时间", "北京时间", "点火状态", "定位"]
 
 LOCATION_TYPE_NAMES = {
     1: "圆形区域",
@@ -824,7 +1013,64 @@ def parse_e6_private_klv(value):
     return result
 
 
-def parse_location_extra(extra):
+def parse_gosucn_scalar(value, item_len, scale=1, offset=0, unit="", ff_is_invalid=True):
+    invalid = ff_is_invalid and bool(value) and all(byte == 0xFF for byte in value)
+    if invalid:
+        return {
+            "是否有效": False,
+            "无效值说明": f"{item_len}字节全FF，表示设备不支持或无法获取该数据",
+            "单元格值": "不支持/无效",
+        }
+    raw = int.from_bytes(value, "big")
+    actual = raw * scale + offset
+    actual = float(format_number(actual, 4)) if isinstance(actual, float) else actual
+    return {
+        "是否有效": True,
+        "原始整数值": raw,
+        "换算值": actual,
+        "单位": unit,
+        "单元格值": f"{format_number(actual)}{unit}",
+    }
+
+
+def parse_gosucn_location_extra_item(item_id, item_len, value):
+    rules = {
+        0x01: (4, "里程", 0.1, 0, "km", True),
+        0x02: (2, "油量", 0.1, 0, "L", True),
+        0x03: (2, "车辆速度", 0.1, 0, "km/h", True),
+        0x07: (2, "新能源动力电池SOC", 0.1, 0, "%", True),
+        0xE1: (4, "设备累计里程", 0.1, 0, "km", True),
+        0xE2: (2, "剩余油量百分比", 0.01, 0, "%", True),
+        0xE3: (2, "发动机转速", 1, 0, "RPM", True),
+        0xE4: (1, "动力电池健康状态(SOH)", 1, 0, "%", True),
+        0xE5: (2, "主电电压", 0.1, 0, "V", False),
+        0xE6: (2, "发动机冷却液温度", 1, -40, "℃", True),
+    }
+    rule = rules.get(item_id)
+    if not rule:
+        return None
+    expected_len, name, scale, value_offset, unit, ff_is_invalid = rule
+    if item_len != expected_len:
+        return {
+            "解析提示": f"GOSUCN附加信息0x{item_id:02X}长度应为{expected_len}字节，当前为{item_len}字节。",
+            "单元格值": hex_slice(value),
+        }
+    decoded = parse_gosucn_scalar(value, item_len, scale, value_offset, unit, ff_is_invalid)
+    decoded["字段名称"] = name
+    if decoded.get("是否有效"):
+        raw = decoded.get("原始整数值", 0)
+        if item_id == 0x07 and raw > 1000:
+            add_protocol_warning(decoded, f"{name}有效范围为0～100%，当前为{format_number(raw * scale)}%。")
+        elif item_id == 0xE2 and raw > 10000:
+            add_protocol_warning(decoded, f"{name}有效范围为0～100%，当前为{format_number(raw * scale)}%。")
+        elif item_id == 0xE4 and raw > 100:
+            add_protocol_warning(decoded, f"{name}有效范围为0～100%，当前为{raw}%。")
+        elif item_id == 0x30 and raw > 100:
+            add_protocol_warning(decoded, f"无线通信网络信号强度范围为0～100，当前为{raw}。")
+    return decoded
+
+
+def parse_location_extra(extra, protocol="2013"):
     result = {"附加信息原始": hex_slice(extra)}
     offset = 0
     items = []
@@ -842,7 +1088,37 @@ def parse_location_extra(extra):
             f"[{item_len:02X}]附加信息长度": item_len,
             "原始值": hex_slice(value),
         }
-        if item_id == 0x01 and item_len == 4:
+        gosucn_decoded = (
+            parse_gosucn_location_extra_item(item_id, item_len, value)
+            if protocol == "gosucn2013"
+            else None
+        )
+        if protocol == "gosucn2013" and item_id == 0x12 and item_len == 6:
+            item["进出区域报警对象"] = parse_location_area_route_alarm(value)
+            item["单元格值"] = item["进出区域报警对象"]["单元格值"]
+            location_type = value[0]
+            direction = value[5]
+            if location_type not in (1, 2, 3):
+                add_protocol_warning(item, f"位置类型应为1圆形、2矩形或3多边形，当前为{location_type}。")
+            if direction not in (0, 1):
+                add_protocol_warning(item, f"进出方向应为0进入或1离开，当前为{direction}。")
+        elif protocol == "gosucn2013" and item_id in (0x30, 0x31) and item_len == 1:
+            field_name = "无线通信网络信号强度" if item_id == 0x30 else "GNSS定位卫星数"
+            item[field_name] = value[0]
+            item["单元格值"] = value[0]
+            if item_id == 0x30 and value[0] > 100:
+                add_protocol_warning(item, f"无线通信网络信号强度范围为0～100，当前为{value[0]}。")
+        elif gosucn_decoded is not None:
+            item["GOSUCN附加信息对象"] = gosucn_decoded
+            item["单元格值"] = gosucn_decoded.get("单元格值", hex_slice(value))
+            if "解析提示" in gosucn_decoded:
+                item["解析提示"] = gosucn_decoded["解析提示"]
+            if "GOSUCN协议检查提示" in gosucn_decoded:
+                item["GOSUCN协议检查提示"] = gosucn_decoded["GOSUCN协议检查提示"]
+        elif protocol == "gosucn2013":
+            item["解析提示"] = f"高新兴瑞联808协议1.0未定义附加信息0x{item_id:02X}。"
+            item["单元格值"] = hex_slice(value)
+        elif item_id == 0x01 and item_len == 4:
             item["里程(km)"] = int.from_bytes(value, "big") / 10
             item["单元格值"] = format_number(item["里程(km)"])
         elif item_id == 0x02 and item_len == 2:
@@ -891,10 +1167,20 @@ def parse_location_extra(extra):
         items.append(item)
 
     result["附加信息列表"] = items
+    if protocol == "gosucn2013":
+        reported = {}
+        for item in items:
+            item_id = find_top_value_by_suffix(item, "附加信息ID")[1]
+            if isinstance(item_id, int):
+                reported[item_id] = item.get("单元格值", item.get("原始值", ""))
+        result["GOSUCN扩展附加信息状态"] = {
+            format_pid_header(item_id): reported.get(item_id, "未上报")
+            for item_id in range(0xE1, 0xE7)
+        }
     return result
 
 
-def parse_location_report(body, name="位置信息汇报"):
+def parse_location_report(body, name="位置信息汇报", protocol="2013"):
     result = {name: hex_slice(body)}
     if len(body) < 28:
         result["解析提示"] = f"位置基础信息至少 28 字节，当前为 {len(body)} 字节。"
@@ -912,9 +1198,13 @@ def parse_location_report(body, name="位置信息汇报"):
     offset += 6
     extra = body[offset:]
 
+    time_text = bytes_to_bcd(time_raw)
     result.update({
         f"[{body[0:4].hex().upper()}]报警标志": alarm,
-        "报警标志对象": active_bit_names(alarm, ALARM_BIT_NAMES),
+        "报警标志对象": active_bit_names(
+            alarm,
+            GOSUCN_ALARM_BIT_NAMES if protocol == "gosucn2013" else ALARM_BIT_NAMES,
+        ),
         f"[{body[4:8].hex().upper()}]状态": status,
         "状态对象": parse_location_status(status),
         f"[{body[8:12].hex().upper()}]纬度": latitude_raw / 1_000_000,
@@ -922,10 +1212,37 @@ def parse_location_report(body, name="位置信息汇报"):
         f"[{body[16:18].hex().upper()}]高程(m)": altitude,
         f"[{body[18:20].hex().upper()}]速度(km/h)": speed_raw / 10,
         f"[{body[20:22].hex().upper()}]方向": direction,
-        f"[{hex_slice(time_raw)}]时间": bytes_to_bcd(time_raw),
+        f"[{hex_slice(time_raw)}]时间": time_text,
     })
+    if protocol == "gosucn2013":
+        result["北京时间"] = utc_time_text_to_beijing(time_text)
+        result["时间基准"] = "UTC+0"
+        supported_alarm_bits = {1, 2, 7, 8, 20, 29}
+        unexpected_bits = [bit for bit in range(32) if alarm & (1 << bit) and bit not in supported_alarm_bits]
+        if unexpected_bits:
+            add_protocol_warning(result, f"出现当前协议声明未实现的报警位：{unexpected_bits}")
+        unsupported_status_mask = status & ~0x0F
+        if unsupported_status_mask:
+            active_status_bits = [bit for bit in range(4, 32) if status & (1 << bit)]
+            add_protocol_warning(result, f"状态位bit4～bit31按本协议应固定为0，当前置位：{active_status_bits}")
+        if direction > 359:
+            add_protocol_warning(result, f"方向有效范围为0～359，当前为{direction}。")
+        if not validate_bcd_datetime(time_raw):
+            add_protocol_warning(result, f"定位时间必须是合法的YYMMDDhhmmss BCD时间，当前为{hex_slice(time_raw)}。")
     if extra:
-        result["附加信息对象"] = parse_location_extra(extra)
+        result["附加信息对象"] = parse_location_extra(extra, protocol)
+    if protocol == "gosucn2013":
+        item_ids = set()
+        for item in result.get("附加信息对象", {}).get("附加信息列表", []):
+            for key, value in item.items():
+                if isinstance(key, str) and key.endswith("附加信息ID"):
+                    item_ids.add(value)
+                    break
+        has_area_alarm = bool(alarm & (1 << 20))
+        if has_area_alarm and 0x12 not in item_ids:
+            add_protocol_warning(result, "进出区域报警bit20置位时必须携带附加信息0x12。")
+        if not has_area_alarm and 0x12 in item_ids:
+            add_protocol_warning(result, "携带附加信息0x12时应同时置位进出区域报警bit20。")
     return result
 
 
@@ -1395,7 +1712,7 @@ def parse_0f3b_compressed_report(body):
     return result
 
 
-def parse_register_response(body):
+def parse_register_response(body, protocol="2013"):
     result = {"终端注册应答": hex_slice(body)}
     if len(body) < 3:
         result["解析提示"] = f"注册应答最短 3 字节，当前为 {len(body)} 字节。"
@@ -1409,6 +1726,15 @@ def parse_register_response(body):
     if len(body) > 3:
         auth = body[3:]
         result[f"[{hex_slice(auth)}]鉴权码"] = safe_decode(auth)
+    if protocol == "gosucn2013":
+        auth = body[3:]
+        result["GOSUCN鉴权规则"] = "注册成功时必须携带16～32字节ASCII随机字母数字鉴权码"
+        if register_result == 0 and not 16 <= len(auth) <= 32:
+            add_protocol_warning(result, f"注册成功应答的鉴权码应为16～32字节，当前为{len(auth)}字节。")
+        if register_result == 0 and auth and not is_ascii_alnum(auth):
+            add_protocol_warning(result, "注册成功应答的鉴权码必须是ASCII随机字母数字。")
+        elif register_result != 0 and auth:
+            add_protocol_warning(result, "注册结果非0时不应携带鉴权码。")
     return result
 
 
@@ -1442,12 +1768,31 @@ TERMINAL_PARAMETER_NAMES = {
     0x00000083: ("车辆标识/VIN", "STRING", ""),
 }
 
+GOSUCN_TERMINAL_PARAMETER_NAMES = {
+    0x00000001: ("心跳间隔", "DWORD", "s", 1),
+    0x00000010: ("主服务器APN", "STRING", "", 1),
+    0x00000011: ("主服务器拨号用户名", "STRING", "", 1),
+    0x00000012: ("主服务器拨号密码", "STRING", "", 1),
+    0x00000013: ("主服务器IP或域名", "STRING", "", 1),
+    0x00000018: ("服务器TCP端口", "DWORD", "", 1),
+    0x00000029: ("缺省时间汇报间隔", "DWORD", "s", 1),
+    0x00000083: ("机动车号牌/车辆标识", "STRING", "", 1),
+    0x0000F001: ("当前仪表里程基准", "DWORD", "km", 0.1),
+}
 
-def decode_terminal_parameter(param_id, value):
-    name, data_type, unit = TERMINAL_PARAMETER_NAMES.get(
-        param_id,
-        (f"未知参数(0x{param_id:08X})", "", ""),
-    )
+
+def decode_terminal_parameter(param_id, value, protocol="2013"):
+    if protocol == "gosucn2013":
+        name, data_type, unit, scale = GOSUCN_TERMINAL_PARAMETER_NAMES.get(
+            param_id,
+            (f"未知参数(0x{param_id:08X})", "", "", 1),
+        )
+    else:
+        name, data_type, unit = TERMINAL_PARAMETER_NAMES.get(
+            param_id,
+            (f"未知参数(0x{param_id:08X})", "", ""),
+        )
+        scale = 1
     if data_type == "STRING":
         decoded = decode_trimmed_text(value)
     elif data_type == "BYTE":
@@ -1462,21 +1807,25 @@ def decode_terminal_parameter(param_id, value):
         else:
             decoded = decode_trimmed_text(value)
 
-    display = str(decoded)
+    raw_decoded = decoded
+    if data_type in ("BYTE", "WORD", "DWORD") and scale != 1:
+        decoded = decoded * scale
+    display = format_number(decoded) if isinstance(decoded, (int, float)) else str(decoded)
     if unit and data_type in ("BYTE", "WORD", "DWORD"):
         display = f"{display} {unit}"
     return {
         "参数名称": name,
         "参数类型": data_type or "自动",
         "参数值": decoded,
+        "参数原始整数值": raw_decoded,
         "参数值显示": display,
         "参数单位": unit,
     }
 
 
-def build_terminal_parameter_item(param_id, param_len, value):
-    decoded = decode_terminal_parameter(param_id, value)
-    return {
+def build_terminal_parameter_item(param_id, param_len, value, protocol="2013"):
+    decoded = decode_terminal_parameter(param_id, value, protocol)
+    result = {
         f"[{param_id:08X}]参数ID": param_id,
         f"[{param_len:02X}]参数长度": param_len,
         "参数名称": decoded["参数名称"],
@@ -1486,9 +1835,39 @@ def build_terminal_parameter_item(param_id, param_len, value):
         "参数值文本": decoded["参数值显示"],
         "参数单位": decoded["参数单位"],
     }
+    if protocol == "gosucn2013":
+        expected_lengths = {"BYTE": 1, "WORD": 2, "DWORD": 4}
+        expected_len = expected_lengths.get(decoded["参数类型"])
+        if expected_len is not None and param_len != expected_len:
+            add_protocol_warning(result, (
+                f"参数0x{param_id:08X}类型为{decoded['参数类型']}，"
+                f"参数值长度应为{expected_len}字节，当前为{param_len}字节。"
+            ))
+        elif decoded["参数类型"] == "DWORD":
+            raw_value = decoded["参数原始整数值"]
+            ranges = {
+                0x00000001: (10, 3600),
+                0x00000018: (1, 65535),
+                0x00000029: (8, 1800),
+                0x0000F001: (0, 0xFFFFFFFF),
+            }
+            if param_id in ranges:
+                minimum, maximum = ranges[param_id]
+                result["GOSUCN允许原始值范围"] = f"{minimum}～{maximum}"
+                if not minimum <= raw_value <= maximum:
+                    add_protocol_warning(result, (
+                        f"参数0x{param_id:08X}原始值{raw_value}超出允许范围{minimum}～{maximum}。"
+                    ))
+        if param_id == 0x00000013 and decoded["参数类型"] == "STRING":
+            result["GOSUCN字段要求"] = "只填写服务器IP或域名，不含端口，不拼接多个服务器"
+            address = str(decoded["参数值"])
+            looks_like_host_port = address.count(":") == 1 and address.rsplit(":", 1)[1].isdigit()
+            if looks_like_host_port or ";" in address:
+                add_protocol_warning(result, "参数0x0013只允许IP或域名，不应包含端口或多个服务器分隔符。")
+    return result
 
 
-def parse_query_param_response(body):
+def parse_query_param_response(body, protocol="2013"):
     result = {"查询终端参数应答": hex_slice(body)}
     if len(body) < 3:
         result["解析提示"] = f"参数应答最短 3 字节，当前为 {len(body)} 字节。"
@@ -1506,7 +1885,7 @@ def parse_query_param_response(body):
         require_length(body, offset, param_len)
         value = body[offset:offset + param_len]
         offset += param_len
-        params.append(build_terminal_parameter_item(param_id, param_len, value))
+        params.append(build_terminal_parameter_item(param_id, param_len, value, protocol))
 
     result.update({
         f"[{body[0:2].hex().upper()}]应答流水号": response_serial,
@@ -1515,10 +1894,13 @@ def parse_query_param_response(body):
     })
     if len(params) != count:
         result["解析提示"] = f"声明 {count} 个参数，实际解析 {len(params)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+        result["解析提示"] = f"参数列表解析完成后仍有{len(body) - offset}字节未解析数据。"
     return result
 
 
-def parse_set_params(body):
+def parse_set_params(body, protocol="2013"):
     result = {"设置终端参数": hex_slice(body)}
     if not body:
         result["解析提示"] = "参数个数为空。"
@@ -1535,7 +1917,7 @@ def parse_set_params(body):
         require_length(body, offset, param_len)
         value = body[offset:offset + param_len]
         offset += param_len
-        params.append(build_terminal_parameter_item(param_id, param_len, value))
+        params.append(build_terminal_parameter_item(param_id, param_len, value, protocol))
 
     result.update({
         f"[{body[0]:02X}]参数总数": count,
@@ -1543,6 +1925,9 @@ def parse_set_params(body):
     })
     if len(params) != count:
         result["解析提示"] = f"声明 {count} 个参数，实际解析 {len(params)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+        result["解析提示"] = f"参数列表解析完成后仍有{len(body) - offset}字节未解析数据。"
     return result
 
 
@@ -1570,7 +1955,7 @@ def parse_retransmission_request(body, name):
     return result
 
 
-def parse_query_specific_params(body):
+def parse_query_specific_params(body, protocol="2013"):
     result = {"查询指定终端参数": hex_slice(body)}
     if not body:
         result["解析提示"] = "缺少参数总数。"
@@ -1582,17 +1967,31 @@ def parse_query_specific_params(body):
         if offset + 4 > len(body):
             break
         param_id, offset = read_u32(body, offset)
-        param_ids.append(f"0x{param_id:08X}")
+        param_ids.append(param_id)
     result.update({
         f"[{body[0]:02X}]参数总数": count,
-        "参数ID列表": param_ids,
+        "参数ID列表": [f"0x{param_id:08X}" for param_id in param_ids],
     })
+    if protocol == "gosucn2013":
+        result["参数名称列表"] = [
+            {
+                "参数ID": f"0x{param_id:08X}",
+                "参数名称": GOSUCN_TERMINAL_PARAMETER_NAMES.get(
+                    param_id,
+                    (f"未知参数(0x{param_id:08X})", "", "", 1),
+                )[0],
+            }
+            for param_id in param_ids
+        ]
     if len(param_ids) != count:
         result["解析提示"] = f"声明 {count} 个参数 ID，实际解析 {len(param_ids)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+        result["解析提示"] = f"参数ID列表解析完成后仍有{len(body) - offset}字节未解析数据。"
     return result
 
 
-def parse_terminal_control(body):
+def parse_terminal_control(body, protocol="2013"):
     result = {"终端控制": hex_slice(body)}
     if len(body) < 1:
         result["解析提示"] = "缺少命令字。"
@@ -1603,6 +2002,45 @@ def parse_terminal_control(body):
         f"[{command_word:02X}]命令字": command_word,
         f"[{hex_slice(command_param)}]命令参数": decode_trimmed_text(command_param),
     })
+    if protocol == "gosucn2013":
+        command_names = {
+            0x01: "MCU无线升级",
+            0x02: "控制终端连接指定服务器",
+            0x03: "终端关机",
+            0x04: "终端复位",
+            0x05: "终端恢复出厂设置",
+            0xF0: "Modem无线升级",
+        }
+        result["GOSUCN命令名称"] = command_names.get(command_word, f"本协议未定义命令(0x{command_word:02X})")
+        if command_word in (0x01, 0x02, 0xF0):
+            fields = decode_trimmed_text(command_param).split(";")
+            result["命令参数字段列表"] = fields
+            field_names = (
+                ["URL地址", "拨号点名称", "拨号用户名", "拨号密码", "地址", "TCP端口",
+                 "UDP端口（固定留空）", "制造商ID", "硬件版本", "固件版本", "连接时限（分钟）"]
+                if command_word in (0x01, 0xF0)
+                else ["连接控制", "平台鉴权码", "拨号点名称", "拨号用户名", "拨号密码",
+                      "地址", "TCP端口", "UDP端口（固定留空）", "连接时限（分钟）"]
+            )
+            result["命令参数对象"] = {
+                name: fields[index] if index < len(fields) else ""
+                for index, name in enumerate(field_names)
+            }
+            if command_word == 0x02 and fields and fields[0] == "1":
+                if len(fields) > 1 and any(fields[1:]):
+                    add_protocol_warning(result, "连接控制为1时不应携带后继命令参数。")
+            else:
+                expected_count = len(field_names)
+                if len(fields) != expected_count:
+                    add_protocol_warning(
+                        result,
+                        f"命令0x{command_word:02X}应包含{expected_count}个分号分隔字段，当前为{len(fields)}个。",
+                    )
+                udp_index = 6 if command_word in (0x01, 0xF0) else 7
+                if len(fields) > udp_index and fields[udp_index]:
+                    add_protocol_warning(result, "本协议不使用UDP，命令参数中的UDP端口字段必须留空。")
+        elif command_param:
+            add_protocol_warning(result, f"命令0x{command_word:02X}不应携带命令参数。")
     return result
 
 
@@ -1994,7 +2432,7 @@ def parse_area_attributes(value):
     }
 
 
-def parse_set_circular_area(body):
+def parse_set_circular_area(body, protocol="2013"):
     result = {"设置圆形区域": hex_slice(body)}
     if len(body) < 2:
         result["解析提示"] = f"设置圆形区域至少需要 2 字节，当前为 {len(body)} 字节。"
@@ -2052,12 +2490,20 @@ def parse_set_circular_area(body):
             area[f"[{body[offset - 1]:02X}]超速持续时间(s)"] = overspeed_duration
 
         areas.append(area)
+        if protocol == "gosucn2013":
+            validate_gosucn_area(area, attributes, result)
 
     result.update({
         f"[{setting_type:02X}]设置属性": f"{setting_type}-{AREA_SETTING_TYPE_NAMES.get(setting_type, '未知')}",
         f"[{area_count:02X}]区域总数": area_count,
         "圆形区域列表": areas,
     })
+    if protocol == "gosucn2013":
+        if setting_type not in AREA_SETTING_TYPE_NAMES:
+            add_protocol_warning(result, f"设置属性应为0更新、1追加或2修改，当前为{setting_type}。")
+        if area_count > 125:
+            add_protocol_warning(result, f"单条设置消息区域数不得超过125，当前为{area_count}。")
+        result["GOSUCN围栏容量规则"] = "圆形、矩形、多边形三类合计最多存储40个；需结合终端已有围栏判断"
     if len(areas) != area_count:
         result["解析提示"] = f"声明 {area_count} 个圆形区域，实际解析 {len(areas)} 个。"
     if offset < len(body):
@@ -2080,7 +2526,22 @@ def parse_area_time_speed_fields(body, offset, attributes, area):
     return offset
 
 
-def parse_set_rectangular_area(body):
+def validate_gosucn_area(area, attributes, result):
+    if attributes & 0x3E00:
+        add_protocol_warning(result, "区域属性bit9～bit13为保留位，应固定为0。")
+    for key in area:
+        if not isinstance(key, str) or not (key.endswith("起始时间") or key.endswith("结束时间")):
+            continue
+        raw_hex = key[1:key.find("]")]
+        try:
+            raw = bytes.fromhex(raw_hex)
+        except ValueError:
+            continue
+        if not validate_bcd_datetime(raw):
+            add_protocol_warning(result, f"区域时间必须是合法UTC+0 BCD时间，当前为{raw_hex}。")
+
+
+def parse_set_rectangular_area(body, protocol="2013"):
     result = {"设置矩形区域": hex_slice(body)}
     if len(body) < 2:
         result["解析提示"] = f"设置矩形区域至少需要 2 字节，当前为 {len(body)} 字节。"
@@ -2126,12 +2587,20 @@ def parse_set_rectangular_area(body):
             areas.append(area)
             break
         areas.append(area)
+        if protocol == "gosucn2013":
+            validate_gosucn_area(area, attributes, result)
 
     result.update({
         f"[{setting_type:02X}]设置属性": f"{setting_type}-{AREA_SETTING_TYPE_NAMES.get(setting_type, '未知')}",
         f"[{area_count:02X}]区域总数": area_count,
         "矩形区域列表": areas,
     })
+    if protocol == "gosucn2013":
+        if setting_type not in AREA_SETTING_TYPE_NAMES:
+            add_protocol_warning(result, f"设置属性应为0更新、1追加或2修改，当前为{setting_type}。")
+        if area_count > 125:
+            add_protocol_warning(result, f"单条设置消息区域数不得超过125，当前为{area_count}。")
+        result["GOSUCN围栏容量规则"] = "圆形、矩形、多边形三类合计最多存储40个；需结合终端已有围栏判断"
     if len(areas) != area_count:
         result["解析提示"] = f"声明 {area_count} 个矩形区域，实际解析 {len(areas)} 个。"
     if offset < len(body):
@@ -2139,7 +2608,7 @@ def parse_set_rectangular_area(body):
     return result
 
 
-def parse_set_polygon_area(body):
+def parse_set_polygon_area(body, protocol="2013"):
     result = {"设置多边形区域": hex_slice(body)}
     if len(body) < 8:
         result["解析提示"] = f"设置多边形区域至少需要 8 字节，当前为 {len(body)} 字节。"
@@ -2184,6 +2653,9 @@ def parse_set_polygon_area(body):
     area[f"[{body[vertex_count_offset:vertex_count_offset + 2].hex().upper()}]区域总顶点数"] = vertex_count
     area["顶点列表"] = vertices
     result["区域对象"] = area
+    if protocol == "gosucn2013":
+        validate_gosucn_area(area, attributes, result)
+        result["GOSUCN围栏容量规则"] = "圆形、矩形、多边形三类合计最多存储40个；需结合终端已有围栏判断"
     if len(vertices) != vertex_count:
         result["解析提示"] = f"声明 {vertex_count} 个顶点，实际解析 {len(vertices)} 个。"
     if offset < len(body):
@@ -2191,7 +2663,7 @@ def parse_set_polygon_area(body):
     return result
 
 
-def parse_delete_id_list(body, name):
+def parse_delete_id_list(body, name, protocol="2013"):
     result = {name: hex_slice(body)}
     if len(body) < 1:
         result["解析提示"] = "缺少区域/路线数。"
@@ -2210,6 +2682,13 @@ def parse_delete_id_list(body, name):
     })
     if len(ids) != count:
         result["解析提示"] = f"声明 {count} 个 ID，实际解析 {len(ids)} 个。"
+    if offset < len(body):
+        result["未解析尾部HEX"] = hex_slice(body[offset:])
+        result["解析提示"] = f"区域ID列表解析完成后仍有{len(body) - offset}字节未解析数据。"
+    if protocol == "gosucn2013" and count > 125:
+        add_protocol_warning(result, f"单条删除消息区域数不得超过125，当前为{count}。")
+    if protocol == "gosucn2013" and count == 0:
+        result["GOSUCN删除语义"] = "区域数为0，删除该类型全部区域"
     return result
 
 
@@ -2228,9 +2707,9 @@ def parse_empty_body(body, name):
 
 def parse_body(msg_id, body, protocol="2013"):
     if msg_id == 0x0001:
-        return parse_common_response(body, "终端通用应答")
+        return parse_common_response(body, "终端通用应答", protocol)
     if msg_id == 0x8001:
-        return parse_common_response(body, "平台通用应答")
+        return parse_common_response(body, "平台通用应答", protocol)
     if msg_id in (0x0002, 0x0003, 0x0004, 0x8104, 0x8107, 0x8201, 0x8204, 0x8702):
         return parse_empty_body(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"))
     if msg_id == 0x0005:
@@ -2240,18 +2719,18 @@ def parse_body(msg_id, body, protocol="2013"):
     if msg_id == 0x0102:
         return parse_authentication(body, protocol)
     if msg_id == 0x0104:
-        return parse_query_param_response(body)
+        return parse_query_param_response(body, protocol)
     if msg_id == 0x0107:
         return parse_terminal_property_response(body, protocol)
     if msg_id == 0x0108:
-        return parse_upgrade_result_notification(body)
+        return parse_upgrade_result_notification(body, protocol)
     if msg_id == 0x0200:
-        return parse_location_report(body)
+        return parse_location_report(body, protocol=protocol)
     if msg_id == 0x0201:
         result = {"位置信息查询应答": hex_slice(body)}
         if len(body) >= 2:
             result[f"[{body[0:2].hex().upper()}]应答流水号"] = int.from_bytes(body[0:2], "big")
-            result["位置数据对象"] = parse_location_report(body[2:], "位置数据")
+            result["位置数据对象"] = parse_location_report(body[2:], "位置数据", protocol)
         else:
             result["解析提示"] = "缺少应答流水号。"
         return result
@@ -2292,13 +2771,13 @@ def parse_body(msg_id, body, protocol="2013"):
     if msg_id == 0x8004:
         return parse_server_time_response(body)
     if msg_id == 0x8100:
-        return parse_register_response(body)
+        return parse_register_response(body, protocol)
     if msg_id == 0x8103:
-        return parse_set_params(body)
+        return parse_set_params(body, protocol)
     if msg_id == 0x8105:
-        return parse_terminal_control(body)
+        return parse_terminal_control(body, protocol)
     if msg_id == 0x8106:
-        return parse_query_specific_params(body)
+        return parse_query_specific_params(body, protocol)
     if msg_id == 0x8108:
         return parse_upgrade_package(body)
     if msg_id == 0x8140:
@@ -2324,13 +2803,13 @@ def parse_body(msg_id, body, protocol="2013"):
     if msg_id == 0x8500:
         return parse_vehicle_control(body)
     if msg_id == 0x8600:
-        return parse_set_circular_area(body)
+        return parse_set_circular_area(body, protocol)
     if msg_id == 0x8602:
-        return parse_set_rectangular_area(body)
+        return parse_set_rectangular_area(body, protocol)
     if msg_id == 0x8604:
-        return parse_set_polygon_area(body)
+        return parse_set_polygon_area(body, protocol)
     if msg_id in (0x8601, 0x8603, 0x8605, 0x8607):
-        return parse_delete_id_list(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"))
+        return parse_delete_id_list(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"), protocol)
     if msg_id == 0x8606:
         return parse_raw_with_note(body, MESSAGE_ID_NAMES.get(msg_id, f"Unknown(0x{msg_id:04X})"), "已识别标准区域/路线设置消息，字段为可变结构，当前保留原始 HEX。")
     if msg_id in (0x8700, 0x8701):
@@ -2349,8 +2828,19 @@ def parse_body(msg_id, body, protocol="2013"):
 
 
 def normalize_protocol(protocol):
-    protocol_text = str(protocol or "2013")
+    protocol_text = str(protocol or "2013").upper()
+    if "GOSUCN" in protocol_text:
+        return "gosucn2013"
     return "2019" if "2019" in protocol_text else "2013"
+
+
+def protocol_display_name(protocol):
+    normalized = normalize_protocol(protocol)
+    if normalized == "gosucn2013":
+        return "GOSUCN-808-2013"
+    if normalized == "2019":
+        return "JT/T 808-2019"
+    return "JT/T 808-2013-YK"
 
 
 def parse_one_frame(frame, protocol="2013"):
@@ -2372,6 +2862,11 @@ def parse_one_frame(frame, protocol="2013"):
 
     result = {"[7E]开始": 126}
     result.update(header)
+    if protocol == "gosucn2013" and msg_id not in GOSUCN_SUPPORTED_MESSAGE_IDS:
+        result["GOSUCN协议范围提示"] = (
+            f"高新兴瑞联808协议1.0未声明实现消息0x{msg_id:04X}；"
+            "下面仅按JT/T 808-2013兼容结构尝试解析。"
+        )
     result["数据体对象"] = parse_body(msg_id, body, protocol)
     result[f"[{received_checksum:02X}]校验码"] = received_checksum
     result["校验结果对象"] = {
@@ -2428,7 +2923,10 @@ def extract_zipsend_hex(line):
 
 
 def has_parse_warning(value):
-    warning_keywords = ("解析提示", "解析错误", "解析失败", "数据长度不足", "无法匹配", "非法")
+    warning_keywords = (
+        "解析提示", "解析错误", "解析失败", "数据长度不足", "无法匹配", "非法",
+        "GOSUCN协议检查提示", "GOSUCN协议范围提示",
+    )
     if isinstance(value, dict):
         for key, item in value.items():
             if any(keyword in str(key) for keyword in warning_keywords):
@@ -2440,6 +2938,24 @@ def has_parse_warning(value):
     elif isinstance(value, str):
         return any(keyword in value for keyword in warning_keywords)
     return False
+
+
+def collect_parse_warnings(value, path=""):
+    collected = []
+    warning_keys = {
+        "GOSUCN协议检查提示", "GOSUCN协议范围提示", "解析提示", "解析错误", "解析失败",
+    }
+    if isinstance(value, dict):
+        for key, item in value.items():
+            current_path = f"{path}.{key}" if path else str(key)
+            if key in warning_keys:
+                collected.append({"位置": current_path, "内容": item})
+            else:
+                collected.extend(collect_parse_warnings(item, current_path))
+    elif isinstance(value, list):
+        for index, item in enumerate(value, start=1):
+            collected.extend(collect_parse_warnings(item, f"{path}[{index}]"))
+    return collected
 
 
 def find_top_value_by_suffix(data, suffix):
@@ -2471,7 +2987,7 @@ def build_location_pid_maps(body_obj):
             if isinstance(key, str) and key.endswith("附加信息ID"):
                 item_id = value
                 break
-        if item_id == 0xE6:
+        if item_id == 0xE6 and "E6私有协议对象" in item:
             e6_obj = item.get("E6私有协议对象", {})
             for klv_item in e6_obj.get("KLV列表", []):
                 if not isinstance(klv_item, dict):
@@ -2495,7 +3011,7 @@ def build_sheet1_row(index, raw_hex, protocol, parsed=None, error_text=""):
             "",
             "",
             "",
-            "JT/T 808-2019" if normalize_protocol(protocol) == "2019" else "JT/T 808-2013",
+            protocol_display_name(protocol),
             "",
             "",
             "",
@@ -2523,7 +3039,7 @@ def build_sheet1_row(index, raw_hex, protocol, parsed=None, error_text=""):
         "7E" if parsed.get("[7E]开始") == 126 else "",
         msg_id_text,
         parsed.get("消息名称", ""),
-        parsed.get("解析标准", "JT/T 808-2019" if normalize_protocol(protocol) == "2019" else "JT/T 808-2013"),
+        parsed.get("解析标准", protocol_display_name(protocol)),
         prop_text,
         prop_obj.get("[bit10~bit12]数据加密", ""),
         phone,
@@ -2535,30 +3051,39 @@ def build_sheet1_row(index, raw_hex, protocol, parsed=None, error_text=""):
     ]
 
 
-def default_location_pid_columns():
+def default_location_pid_columns(protocol="2013"):
+    if normalize_protocol(protocol) == "gosucn2013":
+        return [("normal", pid) for pid in GOSUCN_LOCATION_EXTRA_PID_COLUMNS]
     return (
         [("normal", pid) for pid in LOCATION_EXTRA_PID_COLUMNS]
         + [("e6", pid) for pid in LOCATION_E6_PID_COLUMNS]
     )
 
 
-def ordered_location_pid_columns(normal_pids=None, e6_pids=None):
+def ordered_location_pid_columns(normal_pids=None, e6_pids=None, protocol="2013"):
     normal_pid_set = set(normal_pids or [])
     e6_pid_set = set(e6_pids or [])
 
-    normal_columns = list(LOCATION_EXTRA_PID_COLUMNS)
+    normal_columns = list(
+        GOSUCN_LOCATION_EXTRA_PID_COLUMNS
+        if normalize_protocol(protocol) == "gosucn2013"
+        else LOCATION_EXTRA_PID_COLUMNS
+    )
     normal_columns.extend(sorted(pid for pid in normal_pid_set if pid not in normal_columns))
 
-    e6_columns = sorted(set(LOCATION_E6_PID_COLUMNS) | e6_pid_set)
+    e6_columns = (
+        [] if normalize_protocol(protocol) == "gosucn2013"
+        else sorted(set(LOCATION_E6_PID_COLUMNS) | e6_pid_set)
+    )
     return [("normal", pid) for pid in normal_columns] + [("e6", pid) for pid in e6_columns]
 
 
-def build_location_row(parsed, location_pid_columns=None):
+def build_location_row(parsed, location_pid_columns=None, protocol="2013"):
     body_obj = parsed.get("数据体对象", {})
     normal_pid_map, e6_pid_map = build_location_pid_maps(body_obj)
     status_obj = body_obj.get("状态对象", {})
     if location_pid_columns is None:
-        location_pid_columns = default_location_pid_columns()
+        location_pid_columns = default_location_pid_columns(protocol)
 
     row = [
         find_body_value_by_name(body_obj, "纬度"),
@@ -2567,12 +3092,18 @@ def build_location_row(parsed, location_pid_columns=None):
         find_body_value_by_name(body_obj, "速度(km/h)"),
         find_body_value_by_name(body_obj, "方向"),
         find_body_value_by_name(body_obj, "时间"),
+        body_obj.get("北京时间", ""),
         status_text_for_excel(status_obj, 0),
         status_text_for_excel(status_obj, 1),
     ]
     for source, pid in location_pid_columns:
         value_map = e6_pid_map if source == "e6" else normal_pid_map
-        row.append(value_map.get(pid, "N/A"))
+        missing_value = (
+            "未上报"
+            if normalize_protocol(protocol) == "gosucn2013" and 0xE1 <= pid <= 0xE6
+            else "N/A"
+        )
+        row.append(value_map.get(pid, missing_value))
     return row
 
 
@@ -2619,7 +3150,7 @@ def build_0f3b_rows(index, parsed, raw_hex, protocol):
         index,
         f"0x{msg_id:04X}" if isinstance(msg_id, int) else "",
         parsed.get("消息名称", ""),
-        parsed.get("解析标准", "JT/T 808-2019" if normalize_protocol(protocol) == "2019" else "JT/T 808-2013"),
+        parsed.get("解析标准", protocol_display_name(protocol)),
         phone,
         serial,
         find_object_value_by_suffix(body_obj, "采集频率"),
@@ -2663,9 +3194,17 @@ def format_pid_header(pid):
     names = {
         0x01: "里程",
         0x02: "油量",
+        0x03: "车辆速度",
         0x07: "新能源动力电池包电量SOC",
+        0x12: "进出区域报警",
         0x30: "信号",
         0x31: "卫星数",
+        0xE1: "设备累计里程",
+        0xE2: "剩余油量百分比",
+        0xE3: "发动机转速",
+        0xE4: "动力电池健康状态(SOH)",
+        0xE5: "主电电压",
+        0xE6: "发动机冷却液温度",
         0x08: "总油耗",
         0x14: "平均油耗",
         0x15: "瞬时油耗",
@@ -2675,7 +3214,7 @@ def format_pid_header(pid):
 
 
 def format_pid_excel_header(pid):
-    return f"0x{pid:02X}"
+    return format_pid_header(pid)
 
 
 def ensure_location_pid_columns(ws, location_pid_columns, normal_pid_map, e6_pid_map, styles):
@@ -2742,7 +3281,7 @@ def batch_parse_zipsend_file(input_path, output_path, protocol="2013", progress_
         "序号", "消息头", "消息ID", "消息名称", "解析标准", "消息体属性", "数据加密",
         "手机号", "消息流水号", "消息体对象", "校验码", "消息尾", "完整HEX数据",
     ]
-    location_pid_columns = ordered_location_pid_columns()
+    location_pid_columns = ordered_location_pid_columns(protocol=protocol)
     location_headers = LOCATION_BASE_HEADERS + [format_pid_excel_header(pid) for _source, pid in location_pid_columns]
     ws1.append(sheet1_headers)
     ws2.append(location_headers)
@@ -2840,7 +3379,11 @@ def batch_parse_zipsend_file(input_path, output_path, protocol="2013", progress_
                 f3b_detail_count=f3b_detail_count,
             )
 
-    location_pid_columns = ordered_location_pid_columns(normal_location_pids, e6_location_pids)
+    location_pid_columns = ordered_location_pid_columns(
+        normal_location_pids,
+        e6_location_pids,
+        protocol=protocol,
+    )
     location_headers = LOCATION_BASE_HEADERS + [format_pid_excel_header(pid) for _source, pid in location_pid_columns]
     for column_index, header in enumerate(location_headers, start=1):
         cell = ws2.cell(row=1, column=column_index, value=header)
@@ -2848,7 +3391,7 @@ def batch_parse_zipsend_file(input_path, output_path, protocol="2013", progress_
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center", vertical="center")
     for parsed in location_records:
-        ws2.append(build_location_row(parsed, location_pid_columns))
+        ws2.append(build_location_row(parsed, location_pid_columns, protocol))
         apply_location_e6_fill(ws2, ws2.max_row, location_pid_columns, e6_fill)
 
     report_batch_progress(progress_callback, "formatting", current=parsed_count, total=total_count)
@@ -3085,11 +3628,65 @@ def build_terminal_parameter_key_info(lines, body_obj):
     return True
 
 
+def build_terminal_property_key_info(lines, body_obj):
+    """以便于测试人员阅读的方式展示 0x0107 终端属性应答。"""
+    append_key_line(lines, "消息体", "查询终端属性应答")
+    append_body_raw_hex(lines, body_obj)
+
+    terminal_type = find_object_value_by_suffix(body_obj, "终端类型")
+    append_key_line(
+        lines,
+        "终端类型",
+        f"0x{terminal_type:04X} ({terminal_type})" if isinstance(terminal_type, int) else terminal_type,
+    )
+    terminal_bits = body_obj.get("终端类型对象", {})
+    if isinstance(terminal_bits, dict):
+        append_key_line(lines, "客运车辆", "适用" if terminal_bits.get("bit0") else "不适用", 1)
+        append_key_line(lines, "危险品车辆", "适用" if terminal_bits.get("bit1") else "不适用", 1)
+        append_key_line(lines, "普通货运车辆", "适用" if terminal_bits.get("bit2") else "不适用", 1)
+        append_key_line(lines, "出租车辆", "适用" if terminal_bits.get("bit3") else "不适用", 1)
+        append_key_line(lines, "硬盘录像", "支持" if terminal_bits.get("bit6") else "不支持", 1)
+        append_key_line(lines, "终端结构", "分体机" if terminal_bits.get("bit7") else "一体机", 1)
+
+    lines.append("")
+    append_key_line(lines, "制造商ID", find_object_value_by_suffix(body_obj, "制造商ID"))
+    append_key_line(lines, "终端型号", find_object_value_by_suffix(body_obj, "终端型号"))
+    append_key_line(lines, "终端ID（IMEI后14位）", find_object_value_by_suffix(body_obj, "终端ID"))
+    append_key_line(lines, "SIM卡ICCID", find_object_value_by_suffix(body_obj, "终端SIM卡ICCID"))
+    append_key_line(lines, "Modem版本号", find_object_value_by_suffix(body_obj, "终端硬件版本号"))
+    append_key_line(lines, "MCU版本号", find_object_value_by_suffix(body_obj, "终端固件版本号"))
+
+    lines.append("")
+    gnss_value = find_object_value_by_suffix(body_obj, "GNSS模块属性")
+    append_key_line(lines, "GNSS模块属性", f"0x{gnss_value:02X}" if isinstance(gnss_value, int) else gnss_value)
+    gnss_bits = body_obj.get("GNSS模块属性对象", {})
+    if isinstance(gnss_bits, dict):
+        for bit, name in ((0, "GPS"), (1, "北斗"), (2, "GLONASS"), (3, "Galileo")):
+            append_key_line(lines, name, "支持" if gnss_bits.get(f"bit{bit}") else "不支持", 1)
+
+    lines.append("")
+    comm_value = find_object_value_by_suffix(body_obj, "通信模块属性")
+    append_key_line(lines, "通信模块属性", f"0x{comm_value:02X}" if isinstance(comm_value, int) else comm_value)
+    comm_bits = body_obj.get("通信模块属性对象", {})
+    if isinstance(comm_bits, dict):
+        comm_names = (
+            (0, "GPRS"), (1, "CDMA"), (2, "TD-SCDMA"), (3, "WCDMA"),
+            (4, "CDMA2000"), (5, "TD-LTE"), (7, "其他通信方式"),
+        )
+        for bit, name in comm_names:
+            append_key_line(lines, name, "支持" if comm_bits.get(f"bit{bit}") else "不支持", 1)
+
+
 def build_location_key_info(lines, body_obj):
     append_key_line(lines, "消息体", "位置信息汇报")
     append_body_raw_hex(lines, body_obj)
-    for name in ("纬度", "经度", "高程(m)", "速度(km/h)", "方向", "时间"):
+    for name in ("纬度", "经度", "高程(m)", "速度(km/h)", "方向"):
         append_key_line(lines, name, find_body_value_by_name(body_obj, name))
+    utc_time = find_body_value_by_name(body_obj, "时间")
+    if body_obj.get("北京时间"):
+        append_key_line(lines, "时间", f"{utc_time} 北京时间: {body_obj['北京时间']}")
+    else:
+        append_key_line(lines, "时间", utc_time)
     status_obj = body_obj.get("状态对象", {})
     if isinstance(status_obj, dict):
         append_key_line(lines, "点火状态", status_text_for_excel(status_obj, 0))
@@ -3103,18 +3700,25 @@ def build_location_key_info(lines, body_obj):
         if not isinstance(item, dict):
             continue
         item_id = find_top_value_by_suffix(item, "附加信息ID")[1]
-        if item_id == 0xE6:
+        if item_id == 0xE6 and "E6私有协议对象" in item:
             e6_items.append(item)
         else:
             normal_items.append(item)
 
-    if normal_items:
+    if normal_items or body_obj.get("时间基准") == "UTC+0":
         lines.append("")
         lines.append("附加信息")
+        reported_ids = set()
         for item in normal_items:
             item_id = find_top_value_by_suffix(item, "附加信息ID")[1]
+            if isinstance(item_id, int):
+                reported_ids.add(item_id)
             value = item.get("单元格值", item.get("原始值", "N/A"))
             append_key_line(lines, format_pid_header(item_id) if isinstance(item_id, int) else "未知附加信息", value, 1)
+        if body_obj.get("时间基准") == "UTC+0":
+            for item_id in range(0xE1, 0xE7):
+                if item_id not in reported_ids:
+                    append_key_line(lines, format_pid_header(item_id), "未上报", 1)
 
     if e6_items:
         lines.append("")
@@ -3169,6 +3773,8 @@ def build_key_info_for_frame(parsed):
         append_key_line(lines, "数据加密", prop_obj.get("[bit10~bit12]数据加密", ""))
         append_key_line(lines, "消息体长度", prop_obj.get("[bit0~bit9]消息体长度", ""))
 
+    top_warnings = collect_parse_warnings(parsed)
+
     body_obj = parsed.get("数据体对象", {})
     lines.append("")
     if msg_id == 0x0F3B and isinstance(body_obj, dict):
@@ -3183,8 +3789,14 @@ def build_key_info_for_frame(parsed):
         build_polygon_area_key_info(lines, body_obj)
     elif msg_id == 0x0200 and isinstance(body_obj, dict):
         build_location_key_info(lines, body_obj)
+    elif msg_id == 0x0107 and isinstance(body_obj, dict):
+        build_terminal_property_key_info(lines, body_obj)
     else:
         build_generic_body_key_info(lines, body_obj)
+
+    if top_warnings:
+        lines.append("")
+        append_key_line(lines, "协议检查提示", top_warnings)
 
     checksum_obj = parsed.get("校验结果对象", {})
     if isinstance(checksum_obj, dict):
@@ -3299,13 +3911,13 @@ class JT808ParserApp:
         toolbar.pack(fill=tk.X, pady=(8, 8))
 
         ttk.Label(toolbar, text="协议标准").pack(side=tk.LEFT, padx=(0, 4))
-        self.protocol_var = tk.StringVar(value="JT/T 808-2013")
+        self.protocol_var = tk.StringVar(value="JT/T 808-2013-YK")
         self.protocol_combo = ttk.Combobox(
             toolbar,
             textvariable=self.protocol_var,
-            values=("JT/T 808-2013", "JT/T 808-2019"),
+            values=("JT/T 808-2013-YK", "JT/T 808-2019", "GOSUCN-808-2013"),
             state="readonly",
-            width=16,
+            width=20,
         )
         self.protocol_combo.pack(side=tk.LEFT, padx=(0, 8))
         self.protocol_combo.bind("<<ComboboxSelected>>", lambda _event: self.parse_input())
@@ -3450,7 +4062,10 @@ class JT808ParserApp:
 
     def show_text(self, widget, content):
         widget.delete("1.0", tk.END)
-        error_keywords = ("解析失败", "未知错误", "解析错误", "解析提示", "数据长度不足", "无法匹配", "非法", "不足")
+        error_keywords = (
+            "解析失败", "未知错误", "解析错误", "解析提示", "数据长度不足", "无法匹配", "非法", "不足",
+            "GOSUCN协议检查提示", "GOSUCN协议范围提示", "协议检查提示",
+        )
         warning_keywords = ("尝试记录", "建议")
         invalid_block = False
         for line in content.splitlines(True):
@@ -3513,7 +4128,7 @@ class JT808ParserApp:
             formatted = json.dumps(result, ensure_ascii=False, indent=2)
             self.show_output(formatted)
             self.show_key_output(build_key_info(result))
-            if "解析提示" in formatted or "解析错误" in formatted or "数据长度不足" in formatted:
+            if has_parse_warning(result):
                 self.status_var.set(f"解析完成，但存在红色提示；当前标准：{self.protocol_var.get()}。")
             else:
                 self.status_var.set(f"解析完成，当前标准：{self.protocol_var.get()}。")

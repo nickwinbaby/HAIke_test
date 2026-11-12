@@ -22,9 +22,9 @@ from PyQt5.QtCore import QDateTime, QTimer
 from PyQt5.QtGui import QIcon, QFontMetrics
 
 # 打包命令
-# pyinstaller -F -w --clean -n "4.0协议服务器数据批量解析-20260626" -i protocol_parser.ico --add-data "protocol_parser.ico;." "4.0协议服务器获取数据批量解析-20260626.py"
+# pyinstaller -F -w --clean -n "4.0协议服务器获取数据批量解析-20260908" -i "bulid_photos\protocol_parser.ico" --add-data "bulid_photos\protocol_parser.ico;bulid_photos" "4.0协议服务器获取数据批量解析-20260908.py"
 
-APP_ICON_RELATIVE_PATH = "protocol_parser.ico"
+APP_ICON_RELATIVE_PATH = os.path.join("bulid_photos", "protocol_parser.ico")
 
 
 def _bootstrap_utf8_runtime():
@@ -166,6 +166,13 @@ class StripedTextEdit(QTextEdit):
             self._split_display_row(line, split_raw_data=has_raw_data_column)
             for line in lines[1:]
         )
+        self.set_table_rows(rows)
+
+    def set_table_rows(self, rows):
+        """直接接收表头和数据单元格，避免依靠空格推断列边界。"""
+        if not rows:
+            self.clear()
+            return
         col_count = max(len(row) for row in rows)
 
         normalized_rows = []
@@ -819,6 +826,12 @@ PROCESS_HANDLER_BY_SELECTION = {
 #   - 0427 和 0429 支持多个型号同时上报，格式为 GABB03, GABB04
 #   - 动态参数长度为 0 时显示 Length zero，避免空值造成误判
 
+# modify 2026-10-15
+#   - 按最新TLV表更新共享Key规则，补充采集湿度、Beacon、FLS及车辆数据精度和枚举
+#   - 修正6.29：协议码后直接读取可选TLV，不额外跳过时间或固定位置字段
+#   - 核对4.5、4.6、5.13、6.17、6.28、6.30、8.12.2及9.6的TLV边界和展示
+#   - TLV长度异常时显示原因并继续后续报文，每个Key单独起行，保留原始HEX及Excel列边界
+
 # 将十六进制字符串转换为北京时间
 def hex_to_beijing_time(hex_str):
     timestamp = int(hex_str, 16)
@@ -1036,14 +1049,97 @@ def parse_value(v_hex, invalid, calc):
     except:
         return v_hex
 
-#  KLV解析规则
-def handle_value(k, v_hex):
+def parse_lbs_klv_value(v_hex):
+    """解析通用 Key 411 的 Value，所有变长字段均受当前 TLV 边界限制。"""
+    data = bytes.fromhex(v_hex)
+    offset = 0
+
+    def take(size):
+        nonlocal offset
+        if offset + size > len(data):
+            raise ValueError(f"LBS 数据不足：偏移{offset}，需要{size}字节")
+        value = data[offset:offset + size]
+        offset += size
+        return value
+
+    time_str = hex_to_beijing_time(take(4).hex())
+    home_mcc = take(3).decode("ascii")
+    home_mnc = take(take(1)[0]).decode("ascii")
+    radio = take(1)[0]
+    radio_name = {2: "GSM", 3: "WCDMA", 4: "LTE", 5: "5G NR"}.get(radio, f"保留值{radio:02X}")
+    carrier = take(take(1)[0]).decode("utf-8", errors="replace")
+    consider_ip = take(1)[0]
+    cell_count = take(1)[0]
+    if cell_count > 15:
+        raise ValueError(f"LBS 基站数量超出范围：{cell_count}")
+    cells = []
+    for index in range(cell_count):
+        cell_id = int.from_bytes(take(8), "big")
+        mcc = take(3).decode("ascii")
+        mnc = take(take(1)[0]).decode("ascii")
+        lac = int.from_bytes(take(4), "big")
+        rssi = take(1)[0]
+        cells.append(f"基站{index + 1}(ID={cell_id},PLMN={mcc}{mnc},LAC/TAC={lac},信号=-{rssi}dBm)")
+    wifi_count = take(1)[0]
+    if wifi_count > 15:
+        raise ValueError(f"LBS Wi-Fi数量超出范围：{wifi_count}")
+    wifi_list = []
+    for index in range(wifi_count):
+        mac = ":".join(f"{byte:02X}" for byte in take(6))
+        rssi = take(1)[0]
+        channel = take(1)[0]
+        ssid = take(take(1)[0]).decode("utf-8", errors="replace")
+        wifi_list.append(f"Wi-Fi{index + 1}(MAC={mac},信号=-{rssi}dBm,信道={channel},SSID={ssid})")
+    if offset != len(data):
+        raise ValueError(f"LBS 存在{len(data) - offset}字节未识别数据")
+    return "；".join([
+        f"采集时间={time_str}", f"PLMN={home_mcc}{home_mnc}", f"网络={radio_name}",
+        f"运营商={carrier}", f"IP回退={consider_ip:02X}", f"基站数={cell_count}",
+        *cells, f"Wi-Fi数={wifi_count}", *wifi_list,
+    ])
+
+
+# 已知 Key 的 Value 长度；503同时兼容旧版1字节和新版3字节格式。
+KLV_VALUE_LENGTHS = {
+    200: (2,), 201: (1,), 202: (1,), 204: (2,), 205: (6,), 206: (3,),
+    207: (2,), 208: (2,), 209: (2,), 210: (2,), 211: (1,), 212: (8,),
+    213: (6,), 214: (6,), 215: (6,), 216: (34,),
+    400: (24,), 401: (4,), 402: (4,), 403: (3,), 404: (11,), 405: (16,),
+    406: tuple(range(24, 81, 8)), 407: (2,), 409: (4,), 410: (2,),
+    408: (16,), 500: (2,), 501: (2,), 502: (2,), 503: (1, 3),
+    504: (1,), 505: (1,), 506: (1,), 507: (1,), 508: (2,), 509: (34,),
+    901: (17,), 902: tuple(range(21)),
+    1001: (2,), 1002: (2,), 1003: (2,), 1004: (2,), 1005: (2,),
+    1006: (2,), 1007: (2,), 1008: (2,), 1009: (2,), 1010: (2,),
+    1011: (2,), 1012: (2,), 1013: (4,), 1014: (4,), 1016: (1,),
+    1017: (4,), 1018: (1,), 1019: (4,), 1020: (2,), 1021: (1,),
+    1022: (2,), 1023: (2,), 1024: (1,), 1025: (2,), 1026: (2,),
+    1027: (2,), 1028: (4,), 1029: (1,), 1030: (1,), 1031: (2,),
+    1032: (2,), 1033: (2,), 1034: (1,), 1035: (2,), 1036: (2,),
+    1037: (1,), 1038: (2,), 1039: (4,), 1040: (4,), 1041: (2,),
+    1042: (2,), 1043: (2,), 1044: (1,), 1045: (1,), 1046: (1,),
+    1047: (1,), 1048: (1,), 1050: (2,), 1051: (1,), 1052: (2,),
+    1053: (2,), 1054: (2,), 1055: (2,), 1056: (2,), 1057: (4,),
+    1058: (1,), 1059: (1,), 1060: (1,), 1061: (2,), 1062: (8,),
+    1063: (1,), 1064: (1,), 1065: (2,), 1066: (4,), 1067: (4,), 1068: (1,),
+}
+
+
+#  KLV解析规则：按 Key 复用，不与某一个消息帧绑定。
+def handle_value(k, v_hex, strict=False):
     """
     根据不同K解析V
     """
 
+    v_hex = v_hex.upper()
+    if k in KLV_VALUE_LENGTHS and (len(v_hex) % 2 or len(v_hex) // 2 not in KLV_VALUE_LENGTHS[k]):
+        expected = "/".join(str(size) for size in KLV_VALUE_LENGTHS[k])
+        error = f"Key {k} 长度异常：应为{expected}字节，实际{len(v_hex) // 2}字节"
+        if strict:
+            raise ValueError(error)
+        return f"{error}，HEX={v_hex}"
     try:
-        # ===== 5.1TLVs for Sensor Data 200-214 =======================================
+        # ===== 5.1TLVs for Sensor Data 200-216 =======================================
         if k == 200:
             # Battery Voltage of Tag (mV -> V)
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.001:.3f} Volt")
@@ -1072,10 +1168,13 @@ def handle_value(k, v_hex):
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1 - 40:.1f} °C")
         elif k == 205:
             # Gsensor Data of Beacon (X/Y/Z mg)
-            return f"Gsensor Data: {v_hex}"
+            data = bytes.fromhex(v_hex)
+            axes = [int.from_bytes(data[i:i + 2], "big", signed=True) for i in (0, 2, 4)]
+            return f"X={axes[0]} mg；Y={axes[1]} mg；Z={axes[2]} mg"
         elif k == 206:
             # Angle of Beacon
-            return f"Beacon Angle: {v_hex}"
+            data = bytes.fromhex(v_hex)
+            return f"X={data[0]}°；Y={data[1]}°；Z={data[2]}°"
         elif k == 207:
             # Tilt Event Counter
             return parse_value(v_hex, "FFFF", lambda x: f"{x}")
@@ -1090,57 +1189,116 @@ def handle_value(k, v_hex):
             return parse_value(v_hex, "FFFF", lambda x: f"{x}")
         elif k == 211:
             # Door State of Beacon
-            return "Closed" if v_hex == "01" else "Not closed"
+            return {"00": "00-未关闭", "01": "01-已关闭"}.get(v_hex, f"保留值({v_hex})")
         elif k == 212:
             # Asensor Data
-            return f"Asensor Data: {v_hex}"
-        elif k == 213:
-            # Collected Temperature + Time
-            return f"Collected Temperature Data: {v_hex}"
-        elif k == 214:
-            # Collected Air Pressure + Time
-            return f"Collected Air Pressure Data: {v_hex}"
-        elif k == 215:
-            # Collected Humidity + Time
-            return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1:.1f} %")
-        # ===== 5.2TLVs for Location Data 400-411 =======================================
+            data = bytes.fromhex(v_hex)
+            axes = [int.from_bytes(data[i:i + 2], "big", signed=True) for i in (0, 2, 4)]
+            return (f"X={axes[0]} mg；Y={axes[1]} mg；Z={axes[2]} mg；"
+                    f"时间偏移={int.from_bytes(data[6:8], 'big')} ms")
+        elif k in (213, 214, 215):
+            # 前2字节为数值，后4字节为当前样本的采集UTC。
+            value_hex = v_hex[:4]
+            if k == 213:
+                value = parse_value(value_hex, "FFFF", lambda x: f"{x * 0.1 - 40:.1f} ℃")
+            elif k == 214:
+                value = parse_value(value_hex, "FFFF", lambda x: f"{x} mBar")
+            else:
+                value = parse_value(value_hex, "FFFF", lambda x: f"{x * 0.1:.1f} %RH")
+                if value_hex != "FFFF" and int(value_hex, 16) > 1000:
+                    value = f"超出0-100 %RH范围（HEX={value_hex}）"
+            return f"{value}；采集时间={hex_to_beijing_time(v_hex[4:12])}（北京时间）"
+        elif k == 216:
+            data = bytes.fromhex(v_hex)
+            fls_id = data[4:13].decode("ascii")
+            if not re.fullmatch(r"TD_[A-Za-z0-9]{6}", fls_id):
+                raise ValueError("FLS ID不是完整的TD_XXXXXX")
+            if data[19:22] != bytes.fromhex("160F01"):
+                raise ValueError("FLS厂商/硬件标识应为160F01")
+            fuel = int.from_bytes(data[22:24], "big")
+            algorithm = data[31] & 0x0F
+            fuel_text = f"{fuel} L（传感器需配置为升）" if algorithm == 1 and fuel not in (6500, 7000) else f"原值{fuel}（不换算单位）"
+            return (f"采集时间={hex_to_beijing_time(data[:4].hex())}（北京时间）；FLS ID={fls_id}；"
+                    f"MAC={data[13:19].hex(':').upper()}；厂商原值=160F（ID=0F16）；硬件=01；"
+                    f"油量={fuel_text}；电池电压={data[24] / 10:.1f} V；温度原值={data[25]:02X}；"
+                    f"固件原值={data[26]}；周期原值={int.from_bytes(data[27:31], 'big')}；"
+                    f"量程={data[31] >> 4}；算法={algorithm}；热补偿原值={data[32] >> 4}；"
+                    f"过滤原值={data[32] & 0x0F}；RSSI={int.from_bytes(data[33:34], 'big', signed=True)} dBm")
+        # ===== 5.2TLVs for Location Data 400-412 =======================================
         elif k == 400:
             # One GPS Data
-            return f"GPS Data: {v_hex}"
+            if v_hex == "FF" * 24:
+                return v_hex
+            gps = parse_gps_data(v_hex)
+            return (f"定位时间={gps['Time']}（北京时间）；定位={gps['Positioning']}；时间类型={gps['Time Type']}；"
+                    f"经度={gps['Longitude Direction']} {gps['Longitude']:.5f}°；"
+                    f"纬度={gps['Latitude Direction']} {gps['Latitude']:.5f}°；"
+                    f"卫星数={gps['Sate Num']}；海拔={gps['Height']} m；速度={gps['GPS Speed']} km/h；"
+                    f"方向角={gps['Heading']}°；PDOP={gps['PDOP']}；HDOP={gps['HDOP']}；"
+                    f"VDOP={gps['VDOP']}；HACC={gps['HACC']} m；末字节原值={v_hex[-2:]}")
         elif k == 401:
             # Longitude 经度
-            return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.00001:.5f} Degree")
+            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{'西经' if x & 0x80000000 else '东经'} {(x & 0x7FFFFFFF) * 0.00001:.5f}°")
         elif k == 402:
             # Latitude 纬度
-            return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.00001:.5f} Degree")
+            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{'北纬' if x & 0x80000000 else '南纬'} {(x & 0x7FFFFFFF) * 0.00001:.5f}°")
         elif k == 403:
             # Radius 半径
-            return parse_value(v_hex, "FFFF", lambda x: f"{x} meter")
-        elif k == 404:
-            # Circular Geo-fence
-            return f"Circular Geo-fence: {v_hex}"
-        elif k == 405:
-            # Rectangular Geo-fence
-            return f"Rectangular Geo-fence: {v_hex}"
-        elif k == 406:
-            # Polygon Geo-fence
-            return f"Polygon Geo-fence: {v_hex}"
+            return f"{int(v_hex, 16)} m"
+        elif k in (404, 405, 406):
+            coordinates = v_hex[:16] if k == 404 else v_hex
+            points = []
+            for offset in range(0, len(coordinates), 16):
+                lon = handle_value(401, coordinates[offset:offset + 8], strict=True)
+                lat = handle_value(402, coordinates[offset + 8:offset + 16], strict=True)
+                points.append(f"点{len(points) + 1}：{lon}，{lat}")
+            if k == 404:
+                points.append(f"半径={handle_value(403, v_hex[16:22], strict=True)}")
+            return "；".join(points)
         elif k == 407:
             # Altitude 海拔
             return parse_value(v_hex, "FFFF", lambda x: f"{x - 10000} meter")
         elif k == 408:
             # Location Data 1
-            return f"Location Data: {v_hex}"
+            if v_hex == "FF" * 16:
+                return v_hex
+            data = bytes.fromhex(v_hex)
+            longitude = int.from_bytes(data[0:4], "big")
+            latitude = int.from_bytes(data[4:8], "big")
+            longitude_name = "西经" if longitude & 0x80000000 else "东经"
+            latitude_name = "北纬" if latitude & 0x80000000 else "南纬"
+            altitude = int.from_bytes(data[8:10], "big") - 10000
+            position_time = hex_to_beijing_time(data[10:14].hex())
+            heading = int.from_bytes(data[14:16], "big")
+            return (f"{longitude_name}={(longitude & 0x7FFFFFFF) * 0.00001:.5f}°；"
+                    f"{latitude_name}={(latitude & 0x7FFFFFFF) * 0.00001:.5f}°；"
+                    f"海拔={altitude}m；定位时间={position_time}；方向角={heading}°")
         elif k == 409:
             # Position Time UTC 时间戳
-            return parse_value(v_hex, "FFFF", lambda x: f"{x} Second")
+            return v_hex if v_hex == "FFFFFFFF" else f"{hex_to_beijing_time(v_hex)}（北京时间）"
         elif k == 410:
             # Heading 方向角
             return parse_value(v_hex, "FFFF", lambda x: f"{x} Degree")
         elif k == 411:
             # LBS Data
-            return f"LBS Data: {v_hex}"
-        # ===== device warning message 500-505 ================================================
+            return parse_lbs_klv_value(v_hex)
+        elif k == 412:
+            data = bytes.fromhex(v_hex)
+            if not data:
+                raise ValueError("Beacon数据缺少数量字节")
+            count = data[0]
+            if count > 36 or len(data) != 1 + count * 7:
+                raise ValueError(f"Beacon数量/长度不符：数量={count}，Value长度={len(data)}，应为1+7×N且N不大于36")
+            if not count:
+                return "Beacon数量=0；未扫描到匹配的Beacon"
+            beacons = [f"Beacon数量={count}"]
+            for index in range(count):
+                start = 1 + index * 7
+                mac = data[start:start + 6].hex(':').upper()
+                # 此Key的RSSI为负值的绝对值，与FLS的有符号int8不同。
+                beacons.append(f"MAC={mac}，RSSI={-data[start + 6]} dBm")
+            return "；".join(beacons)
+        # ===== device warning message 500-509 ================================================
         elif k == 500:
             # Temperature Warning 温度告警
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1 - 40:.1f} ℃")
@@ -1152,30 +1310,49 @@ def handle_value(k, v_hex):
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1:.1f} %")
         elif k == 503:
             # Warning Judged from Asensor Data 震动/冲击告警
-            if v_hex == "00":
-                return "Slight Vibration (轻微震动)"
-            elif v_hex == "01":
-                return "Medium Vibration (中等震动)"
-            elif v_hex == "02":
-                return "Severe Vibration (剧烈震动)"
-            elif v_hex == "03":
-                return "Shock (冲击)"
-            else:
-                return f"Reserved ({v_hex})"
+            warning_type = v_hex[:2]
+            warning_name = {"00": "轻微震动", "01": "中等震动", "02": "剧烈震动", "03": "冲击"}.get(
+                warning_type, f"保留值({warning_type})")
+            if len(v_hex) == 6:
+                return f"{warning_type}-{warning_name}；冲击值={int(v_hex[2:], 16)} mg"
+            return f"{warning_type}-{warning_name}"
         elif k == 504:
             # Device Tamper Warning 防拆告警
-            return "Device tampered warning (设备被拆)" if v_hex == "01" else "Normal"
+            return "01-设备被拆" if v_hex == "01" else f"未定义值({v_hex})"
         elif k == 505:
             # Ambient Light Warning 环境光告警
-            return "Ambient light warning (光线异常)" if v_hex == "01" else "Normal"
+            return "01-光线异常" if v_hex == "01" else f"未定义值({v_hex})"
+        elif k in (506, 507):
+            return "01-告警发生" if v_hex == "01" else f"未定义值({v_hex})"
+        elif k == 508:
+            warning_name = {"00": "倾斜预警", "01": "倾斜告警", "02": "倾倒告警"}.get(v_hex[:2], "保留值")
+            angle = int(v_hex[2:], 16)
+            angle_text = f"{angle}°" if angle <= 180 else ("FF-无效角度" if angle == 255 else f"保留值({angle:02X})")
+            return f"{v_hex[:2]}-{warning_name}；角度={angle_text}"
+        elif k == 509:
+            data = bytes.fromhex(v_hex)
+            fls_id = data[:9].decode("ascii")
+            if not re.fullmatch(r"TD_[A-Za-z0-9]{6}", fls_id):
+                raise ValueError("FLS ID不是完整的TD_XXXXXX")
+            if data[31] & 0x0F != 1:
+                raise ValueError(f"FLS告警算法应为1，实际为{data[31] & 0x0F}")
+            work_state = {0: "正常/工作", 1: "休眠"}.get(data[33] & 3, "保留值")
+            ign_state = {0: "熄火", 1: "点火", 2: "未知"}.get((data[33] >> 2) & 3, "保留值")
+            return (f"FLS ID={fls_id}；MAC={data[9:15].hex(':').upper()}；"
+                    f"参考采集时间={hex_to_beijing_time(data[15:19].hex())}（北京时间）；"
+                    f"事件时间={hex_to_beijing_time(data[19:23].hex())}（北京时间）；"
+                    f"参考油量={int.from_bytes(data[23:25], 'big')} L；当前油量={int.from_bytes(data[25:27], 'big')} L；"
+                    f"下降油量={int.from_bytes(data[27:29], 'big')} L；检测间隔={int.from_bytes(data[29:31], 'big')} s；"
+                    f"量程={data[31] >> 4}；算法=1；RSSI={int.from_bytes(data[32:33], 'big', signed=True)} dBm；"
+                    f"触发状态={work_state}，{ign_state}")
         # ===== 5.4TLVs for Fixed Vehicle Information 901-902 ==================================
         elif k == 901:
             # VIN Code 车辆识别码
-            return f"VIN: {v_hex}"
+            return bytes.fromhex(v_hex).decode("ascii")
         elif k == 902:
             # Engine Serial Number 发动机序列号
-            return f"Engine SN: {v_hex}"
-        # ===== config data flow KLV 1001 - 1055 ========================================
+            return bytes.fromhex(v_hex).decode("ascii")
+        # ===== config data flow KLV 1001 - 1068 ========================================
         elif k == 1001:
             return parse_value(v_hex, "FFFF", lambda x: f"{x} RPM")
         elif k == 1002:
@@ -1201,7 +1378,7 @@ def handle_value(k, v_hex):
 
         # 1012 特殊（多无效值）→ 照样支持
         elif k == 1012:
-            return parse_value(v_hex, {"FFFF", "0000", "0001", "FFFE"}, lambda x: f"{x} KM")
+            return {"FFFF": "FFFF", "0000": "0000-故障指示灯熄灭", "FFFE": "FFFE-故障指示灯点亮，里程无法读取"}.get(v_hex, f"{int(v_hex, 16)} KM")
 
         elif k == 1013:
             return parse_value(v_hex, "FFFFFFFF", lambda x: f"{x} meter")
@@ -1228,7 +1405,7 @@ def handle_value(k, v_hex):
                 return v_hex
 
         elif k == 1017:
-            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{x} KM")
+            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{x}（单位见Key 1018）")
 
         # 1018 特殊枚举 → 单独写
         elif k == 1018:
@@ -1246,10 +1423,6 @@ def handle_value(k, v_hex):
         elif k == 1022:
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1 - 1000:.2f} A")
 
-        # ===================== 1022 ~ 1055 全部生成完毕 =====================
-        # 懒得写了 AI 给写的
-        elif k == 1022:
-            return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1 - 1000:.2f} A")
         elif k == 1023:
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1:.2f} Volt")
         elif k == 1024:
@@ -1316,7 +1489,7 @@ def handle_value(k, v_hex):
             if v_hex.upper() == "FF":
                 return v_hex
             try:
-                return "High beam On" if int(v_hex, 16) == 1 else "High beam Off"
+                return {"00": "00-远光灯关闭", "01": "01-远光灯开启"}.get(v_hex, f"保留值({v_hex})")
             except:
                 return v_hex
         elif k == 1038:
@@ -1334,31 +1507,31 @@ def handle_value(k, v_hex):
         elif k == 1044:
             if v_hex.upper() == "FF": return v_hex
             try:
-                return "Open" if int(v_hex, 16) == 1 else "Close"
+                return {"00": "00-关闭", "01": "01-打开"}.get(v_hex, f"保留值({v_hex})")
             except:
                 return v_hex
         elif k == 1045:
             if v_hex.upper() == "FF": return v_hex
             try:
-                return "Open" if int(v_hex, 16) == 1 else "Close"
+                return {"00": "00-关闭", "01": "01-打开"}.get(v_hex, f"保留值({v_hex})")
             except:
                 return v_hex
         elif k == 1046:
             if v_hex.upper() == "FF": return v_hex
             try:
-                return "Open" if int(v_hex, 16) == 1 else "Close"
+                return {"00": "00-关闭", "01": "01-打开"}.get(v_hex, f"保留值({v_hex})")
             except:
                 return v_hex
         elif k == 1047:
             if v_hex.upper() == "FF": return v_hex
             try:
-                return "Open" if int(v_hex, 16) == 1 else "Close"
+                return {"00": "00-关闭", "01": "01-打开"}.get(v_hex, f"保留值({v_hex})")
             except:
                 return v_hex
         elif k == 1048:
             if v_hex.upper() == "FF": return v_hex
             try:
-                return "Open" if int(v_hex, 16) == 1 else "Close"
+                return {"00": "00-关闭", "01": "01-打开"}.get(v_hex, f"保留值({v_hex})")
             except:
                 return v_hex
         elif k == 1050:
@@ -1377,6 +1550,50 @@ def handle_value(k, v_hex):
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1:.2f} %")
         elif k == 1055:
             return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.1:.2f} %")
+        elif k == 1056:
+            return parse_value(v_hex, "FFFF", lambda x: f"{x - 40} ℃")
+        elif k == 1057:
+            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{x} s")
+        elif k in (1058, 1059, 1060, 1063, 1068):
+            states = {
+                1058: {"00": "危险警示灯关闭", "01": "危险警示灯开启"},
+                1059: {"00": "驻车制动未启用", "01": "驻车制动已启用"},
+                1060: {"00": "离合踏板松开", "01": "离合踏板踩下"},
+                1063: {"00": "近光灯关闭", "01": "近光灯开启"},
+                1068: {"00": "制动踏板松开", "01": "制动踏板踩下"},
+            }
+            if v_hex == "FF":
+                return v_hex
+            return f"{v_hex}-{states[k].get(v_hex, '保留值')}"
+        elif k == 1061:
+            return parse_value(v_hex, "FFFF", lambda x: f"{x / 512:.9f} km/L")
+        elif k == 1062:
+            data = bytes.fromhex(v_hex)
+            states = (("未锁", "已锁", "错误", "不可用"),
+                      ("关闭", "打开", "错误", "不可用"),
+                      ("禁用", "启用", "错误", "不可用"))
+            # 前29个二位字段依次为门1-9的锁/开/使能及门10的锁/开。
+            # 字节8高6位定义有歧义，保留原值，不推断门10使能状态。
+            doors = []
+            for door in range(10):
+                fields = []
+                for state_index, name in enumerate(("锁", "开", "使能")):
+                    field_index = door * 3 + state_index
+                    if field_index >= 29:
+                        break
+                    value = (data[field_index // 4] >> ((field_index % 4) * 2)) & 3
+                    fields.append(f"{name}={states[state_index][value]}")
+                doors.append(f"门{door + 1}：{'，'.join(fields)}")
+            doors.append(f"字节8高6位原值={data[7] & 0xFC:02X}（定义待明确）")
+            return "；".join(doors)
+        elif k == 1064:
+            return parse_value(v_hex, "FF", lambda x: f"{x - 125} %")
+        elif k == 1065:
+            return parse_value(v_hex, "FFFF", lambda x: f"{x * 0.05:.2f} L/h")
+        elif k == 1066:
+            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{x * 0.5:.1f} L")
+        elif k == 1067:
+            return parse_value(v_hex, "FFFFFFFF", lambda x: f"{x * 0.05:.2f} h")
 
 
 
@@ -1513,8 +1730,10 @@ def handle_value(k, v_hex):
 
         else:
             return v_hex  # 默认直接返回
-    except:
-        return v_hex
+    except (ValueError, IndexError, OverflowError, OSError) as exc:
+        if strict:
+            raise ValueError(f"Key {k} 解析异常：{exc}") from exc
+        return f"Key {k} 解析异常：{exc}；HEX={v_hex}"
 
 KLV_DISPLAY_NAMES = {
     200: "Tag 电池电压",
@@ -1533,7 +1752,8 @@ KLV_DISPLAY_NAMES = {
     213: "采集温度",
     214: "采集气压",
     215: "采集湿度",
-    400: "One GPS Data",
+    216: "FLS周期采集记录",
+    400: "GPS数据",
     401: "经度",
     402: "纬度",
     403: "半径",
@@ -1541,23 +1761,28 @@ KLV_DISPLAY_NAMES = {
     405: "矩形围栏",
     406: "多边形围栏",
     407: "海拔",
-    408: "Location Data 1",
+    408: "位置数据1",
     409: "定位时间",
     410: "方向角",
     411: "LBS 数据",
+    412: "Beacon扫描信息",
     500: "温度告警",
     501: "气压告警",
     502: "湿度告警",
     503: "震动/冲击告警",
     504: "防拆告警",
     505: "环境光告警",
+    506: "车辆电池启动性能告警",
+    507: "异常漏电或电池老化告警",
+    508: "倾斜/倾倒告警",
+    509: "FLS燃油下降告警",
     901: "VIN 码",
     902: "发动机序列号",
     1001: "发动机转速",
     1002: "车辆速度",
     1003: "发动机冷却液温度",
     1004: "节气门位置",
-    1005: "计算发动机负荷 / 行程平均负荷系数",
+    1005: "计算发动机负荷 / 当前转速下发动机负荷百分比",
     1006: "空气流量传感器流量 / 进气质量流量",
     1007: "进气温度 / 发动机 1 号进气歧管温度",
     1008: "进气歧管绝对压力 / 进气压力",
@@ -1606,14 +1831,34 @@ KLV_DISPLAY_NAMES = {
     1053: "制动副缸压力",
     1054: "发动机冷却液液位",
     1055: "二号油箱液位",
+    1056: "环境温度",
+    1057: "发动机累计运行时间",
+    1058: "危险警示灯开关",
+    1059: "驻车制动开关",
+    1060: "离合器开关",
+    1061: "发动机平均燃油经济性",
+    1062: "车门控制2",
+    1063: "近光灯状态",
+    1064: "发动机实际扭矩百分比",
+    1065: "发动机燃油流量",
+    1066: "发动机行程耗油量",
+    1067: "发动机累计怠速时间",
+    1068: "制动开关",
 }
 
-def parse_klv(data, separator=" , "):
+def parse_klv(data, separator=" , ", strict=False):
     i = 0
     result = []
+    # 严格模式由章节逐条捕获异常；宽松模式也保留错误提示，不能静默截断。
+    if strict:
+        if len(data) % 2:
+            raise ValueError("KLV数据长度不是完整字节")
+        bytes.fromhex(data)
 
-    while i + 6 <= len(data):  # 至少 K(4) + L(2)
+    while i < len(data):
         try:
+            if i + 6 > len(data):
+                raise ValueError("KLV头部不足3字节")
             # 1️⃣ K
             k_hex = data[i:i + 4]
             k = int(k_hex, 16)
@@ -1626,14 +1871,18 @@ def parse_klv(data, separator=" , "):
 
             # 3️⃣ V长度
             v_len = l * 2
+            if strict:
+                if k in KLV_VALUE_LENGTHS and l not in KLV_VALUE_LENGTHS[k]:
+                    expected = "/".join(str(size) for size in KLV_VALUE_LENGTHS[k])
+                    raise ValueError(f"Key {k} 长度异常：应为{expected}字节，实际{l}字节")
             if i + v_len > len(data):
-                break
+                raise ValueError(f"Key {k} 数据不足：声明{l}字节，实际剩余{(len(data) - i) // 2}字节")
 
             v_hex = data[i:i + v_len]
             i += v_len
 
             # 4️⃣ 解析V
-            v_value = handle_value(k, v_hex)
+            v_value = handle_value(k, v_hex, strict=strict)
 
             label = KLV_DISPLAY_NAMES.get(k)
             if label:
@@ -1641,7 +1890,10 @@ def parse_klv(data, separator=" , "):
             else:
                 result.append(f"{k} - {v_value}")
 
-        except:
+        except (ValueError, IndexError, OverflowError, OSError) as exc:
+            if strict:
+                raise
+            result.append(f"TLV解析失败：{exc}")
             break
 
     return separator.join(result)
@@ -2381,6 +2633,7 @@ class DataFetcherApp(QWidget):
             "cfg_version":("配置版本",True),
             "support_status_fota":("支持状态FOTA",True),
             "ap_version":("AP版本",True),
+            "ble_version": ("BLE版本", True),
             "raw_data": ("原始数据", False)
         }
 
@@ -3038,6 +3291,8 @@ class DataFetcherApp(QWidget):
             "mnc": ("MNC", True),
             "cfg_file_version": ("配置版本", True),
             "gl103_workmode": ("GL103模式", True),
+            "configuration_table_digest": ("配置表摘要", True),
+            "activation_status": ("激活状态", True),
             "raw_data": ("原始数据", False)
         }
 
@@ -4914,36 +5169,45 @@ class DataFetcherApp(QWidget):
     def process_connect_data(self, raw_data_string):
         headers = []
         if self.connect_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.connect_time_checkbox.isChecked():
-            headers.append(f"{'时间':<20}")
+            headers.append("时间")
         if self.connect_hardware_version_checkbox.isChecked():
-            headers.append(f"{'硬件版本':<16}")
+            headers.append("硬件版本")
         if self.connect_mcu_ap_version_checkbox.isChecked():
-            headers.append(f"{'MCU/AP版本':<30}")
+            headers.append("MCU/AP版本")
         if self.connect_mdm_version_checkbox.isChecked():
-            headers.append(f"{'MDM版本':<30}")
+            headers.append("MDM版本")
         if self.connect_cfg_version_checkbox.isChecked():
-            headers.append(f"{'配置版本':<10}")
+            headers.append("配置版本")
         if self.connect_support_status_fota_checkbox.isChecked():
-            headers.append(f"{'支持FOTA':<20}")
+            headers.append("支持FOTA")
         if self.connect_ap_version_checkbox.isChecked():
-            headers.append(f"{'AP版本':<30}")
+            headers.append("AP版本")
+        if self.connect_ble_version_checkbox.isChecked():
+            headers.append("BLE版本")
         if self.connect_raw_data_checkbox.isChecked():
-            headers.append(f"{'原始数据'}")
+            headers.append("原始数据")
 
-        connect_times_1 = ["".join(headers)]
+        connect_times_1 = [headers]
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50].upper() == "01":
+                payload_end = 58 + int(line[54:58], 16) * 2
+                if payload_end < 64:
+                    raise ValueError("Connect有效数据不足，无法读取硬件版本和MCU版本长度")
                 imei = ascii_to_decimal(line[18:48])
                 hardware_version = line[58:62]
 
                 offset = 62
 
                 # === 1. MCU AP Version ===
-                mcu_ap_version_num = int(line[offset:offset + 2], 16)
+                mcu_ap_version_num = int(line[offset:offset + 2], 16) & 0x3F
                 offset += 2  # 偏移后移 2 位
+                if mcu_ap_version_num > 62:
+                    raise ValueError("Connect MCU版本长度超过协议规定的62字节")
+                if offset + mcu_ap_version_num * 2 + 2 > payload_end:
+                    raise ValueError("Connect MCU版本长度越界或缺少MDM版本长度")
 
                 if mcu_ap_version_num != 0:
                     mcu_ap_version = ascii_to_decimal(line[offset:offset + mcu_ap_version_num * 2])
@@ -4952,8 +5216,12 @@ class DataFetcherApp(QWidget):
                     mcu_ap_version = "N/A"
 
                 # === 2. MDM Version ===
-                mdm_version_num = int(line[offset:offset + 2], 16)
+                mdm_version_num = int(line[offset:offset + 2], 16) & 0x3F
                 offset += 2
+                if mdm_version_num > 62:
+                    raise ValueError("Connect MDM版本长度超过协议规定的62字节")
+                if offset + mdm_version_num * 2 + 8 > payload_end:
+                    raise ValueError("Connect MDM版本长度越界或缺少上报时间")
 
                 if mdm_version_num != 0:
                     mdm_version = ascii_to_decimal(line[offset:offset + mdm_version_num * 2])
@@ -4961,13 +5229,19 @@ class DataFetcherApp(QWidget):
                 else:
                     mdm_version = "N/A"
 
-                # === 3. Time (固定取 16 位 / 8字节) ===
+                # === 3. Time (8个十六进制字符 / 4字节) ===
                 time_str = hex_to_beijing_time(line[offset:offset + 8])
                 offset += 8
 
                 # === 4. cfg version ===
-                cfg_version_num = int(line[offset:offset + 2], 16)
+                if offset + 2 > payload_end:
+                    raise ValueError("Connect有效数据缺少配置版本长度")
+                cfg_version_num = int(line[offset:offset + 2], 16) & 0x3F
                 offset += 2
+                if cfg_version_num > 62:
+                    raise ValueError("Connect配置版本长度超过协议规定的62字节")
+                if offset + cfg_version_num * 2 + 2 > payload_end:
+                    raise ValueError("Connect配置版本长度越界或缺少FOTA支持状态")
 
                 if cfg_version_num != 0:
                     cfg_version = ascii_to_decimal(line[offset:offset + cfg_version_num * 2])
@@ -4993,45 +5267,60 @@ class DataFetcherApp(QWidget):
                 else:
                     support_status_fota = "NOT FOTA"
 
-                # AP版本是可选字段，部分数据里不存在。
-                # 先根据有效数据长度计算边界，避免把 checksum / FF 补位误读成 AP 版本。
-                effective_data_length = int(line[54:58], 16)
-                payload_end = min(len(line), 58 + effective_data_length * 2)
-
-                ap_version = "AP version not supported  "
+                # AP、BLE是尾部可选字段，只在有效数据范围内依次读取。
+                ap_version = "报文未携带"
                 if offset + 2 <= payload_end:
-                    ap_version_len = int(line[offset:offset + 2], 16)
+                    ap_version_len = int(line[offset:offset + 2], 16) & 0x3F
                     offset += 2
+                    if ap_version_len > 62:
+                        raise ValueError("Connect AP版本长度超过协议规定的62字节")
                     ap_version_end = offset + ap_version_len * 2
-                    if ap_version_len > 0 and ap_version_end <= payload_end:
+                    if ap_version_end > payload_end:
+                        raise ValueError("Connect AP版本长度越界")
+                    if ap_version_len > 0:
                         ap_version = ascii_to_decimal(line[offset:ap_version_end])
-                        offset = ap_version_end
+                    offset = ap_version_end
+
+                ble_version = "报文未携带"
+                if offset + 2 <= payload_end:
+                    ble_version_len = int(line[offset:offset + 2], 16) & 0x3F
+                    offset += 2
+                    if ble_version_len > 62:
+                        raise ValueError("Connect BLE版本长度超过协议规定的62字节")
+                    ble_version_end = offset + ble_version_len * 2
+                    if ble_version_end > payload_end:
+                        raise ValueError("Connect BLE版本长度越界")
+                    if ble_version_len > 0:
+                        ble_version = ascii_to_decimal(line[offset:ble_version_end])
+                    offset = ble_version_end
 
                 row = []
                 if self.connect_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.connect_time_checkbox.isChecked():
-                    row.append(f"{time_str:<22}")
+                    row.append(time_str)
                 if self.connect_hardware_version_checkbox.isChecked():
-                    row.append(f"{hardware_version:<20}")
+                    row.append(hardware_version)
                 if self.connect_mcu_ap_version_checkbox.isChecked():
-                    row.append(f"{mcu_ap_version:<32}")
+                    row.append(mcu_ap_version)
                 if self.connect_mdm_version_checkbox.isChecked():
-                    row.append(f"{mdm_version:<32}")
+                    row.append(mdm_version)
                 if self.connect_cfg_version_checkbox.isChecked():
-                    row.append(f"{cfg_version:<14}")
+                    row.append(cfg_version)
                 if self.connect_support_status_fota_checkbox.isChecked():
-                    row.append(f"{support_status_fota:<22}")
+                    row.append(support_status_fota)
                 if self.connect_ap_version_checkbox.isChecked():
-                    row.append(f"{ap_version:<32}")
+                    row.append(ap_version)
+                if self.connect_ble_version_checkbox.isChecked():
+                    row.append(ble_version)
                 if self.connect_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                connect_times_1.append("".join(row))
+                connect_times_1.append(row)
 
-        if connect_times_1:
+        if len(connect_times_1) > 1:
             self.result_label.setText(f"共找到 {len(connect_times_1) - 1} 个连接事件")
-            self.raw_data_display.setText("\n".join(connect_times_1))
+            self.raw_data_display.set_table_rows(connect_times_1)
         else:
             self.result_label.setText("未找到连接事件")
             self.raw_data_display.setText("")
@@ -7240,41 +7529,49 @@ class DataFetcherApp(QWidget):
     def process_config_data_flow(self, raw_data_string):
         headers = []
         if self.config_dataflow_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.config_dataflow_time_checkbox.isChecked():
-            headers.append(f"{'触发时间':<19}")
+            headers.append("触发时间")
         if self.config_dataflow_klv_checkbox.isChecked():
             headers.append(f"{'KLV数据'}")
         if self.config_dataflow_raw_data_checkbox.isChecked():
             headers.append(f"{'原始数据'}")
 
-        config_dataflow_times_1 = ["".join(headers)]
+        config_dataflow_times_1 = [headers]
+        parse_error_count = 0
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62] == "0306":
                 imei = ascii_to_decimal(line[18:48])  # imei号
-                time_str = hex_to_beijing_time(line[62:70])  # 触发时间
-
-                # ✅ 解析KLV（从第70位开始）
-                valid_data_length = int(line[54:58], 16) * 2  # KLV数据的有效长度（单位是字节，所以乘以2）
-                klv_data = line[70:58+valid_data_length]
-                klv = parse_klv(klv_data, separator=StripedTextEdit.CELL_LINE_BREAK)
+                time_str = "-"
+                try:
+                    valid_data_length = int(line[54:58], 16) * 2
+                    if valid_data_length < 12:
+                        raise ValueError("有效数据不足6字节，无法读取协议码和触发时间")
+                    time_str = hex_to_beijing_time(line[62:70])
+                    klv_data = line[70:58 + valid_data_length]
+                    klv = parse_klv(klv_data, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    klv = f"解析失败：{exc}"
 
                 row = []
                 if self.config_dataflow_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.config_dataflow_time_checkbox.isChecked():
-                    row.append(f"{time_str:<23}")
+                    row.append(time_str)
                 if self.config_dataflow_klv_checkbox.isChecked():
                     row.append(klv)
                 if self.config_dataflow_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                config_dataflow_times_1.append("".join(row))
+                config_dataflow_times_1.append(row)
 
-        if config_dataflow_times_1:
+        if len(config_dataflow_times_1) > 1:
             self.result_label.setText(f"共找到 {len(config_dataflow_times_1) - 1} 个配置数据流事件")
-            self.raw_data_display.setText("\n".join(config_dataflow_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条解析失败（原因见Output）")
+            self.raw_data_display.set_table_rows(config_dataflow_times_1)
         else:
             self.result_label.setText("未找到配置数据流事件")
             self.raw_data_display.setText("")
@@ -7283,7 +7580,7 @@ class DataFetcherApp(QWidget):
     def process_vehicle_Information_klv(self, raw_data_string):
         headers = []
         if self.vehicle_Information_klv_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         # if self.vehicle_Information_klv_time_checkbox.isChecked():
         #     headers.append(f"{'触发时间':<19}")
         if self.vehicle_Information_klv_klv_data_checkbox.isChecked():
@@ -7291,32 +7588,38 @@ class DataFetcherApp(QWidget):
         if self.vehicle_Information_klv_raw_data_checkbox.isChecked():
             headers.append(f"{'原始数据'}")
 
-        vehicle_Information_klv_times_1 = ["".join(headers)]
+        vehicle_Information_klv_times_1 = [headers]
+        parse_error_count = 0
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62] == "0307":
                 imei = ascii_to_decimal(line[18:48])  # imei号
 
-                # ✅ 解析KLV（从第70位开始）
-                valid_data_length = int(line[54:58], 16) * 2  # KLV数据的有效长度（单位是字节，所以乘以2）
-                klv_source_data = line[62:58+valid_data_length]
-                klv_data = parse_klv(klv_source_data)
+                try:
+                    valid_data_length = int(line[54:58], 16) * 2
+                    klv_source_data = line[62:58 + valid_data_length]
+                    klv_data = parse_klv(klv_source_data, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    klv_data = f"解析失败：{exc}"
 
                 row = []
                 if self.vehicle_Information_klv_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 # if self.vehicle_Information_klv_time_checkbox.isChecked():
                 #     row.append(f"{time_str:<23}")
                 if self.vehicle_Information_klv_klv_data_checkbox.isChecked():
-                    row.append(f"{klv_data:<10}")
+                    row.append(klv_data)
                 if self.vehicle_Information_klv_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                vehicle_Information_klv_times_1.append("".join(row))
+                vehicle_Information_klv_times_1.append(row)
 
-        if vehicle_Information_klv_times_1:
+        if len(vehicle_Information_klv_times_1) > 1:
             self.result_label.setText(f"共找到 {len(vehicle_Information_klv_times_1) - 1} 个消息发送事件")
-            self.raw_data_display.setText("\n".join(vehicle_Information_klv_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条解析失败（原因见Output）")
+            self.raw_data_display.set_table_rows(vehicle_Information_klv_times_1)
         else:
             self.result_label.setText("未找到消息发送事件")
             self.raw_data_display.setText("")
@@ -7852,42 +8155,58 @@ class DataFetcherApp(QWidget):
     def process_device_warning_message(self, raw_data_string):
         headers = []
         if self.device_warning_message_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.device_warning_message_time_checkbox.isChecked():
-            headers.append(f"{'触发时间':<19}")
+            headers.append("触发时间")
         if self.device_warning_message_klv_data_checkbox.isChecked():
-            headers.append(f"{'告警类型':<20}")
+            headers.append("告警类型")
         if self.device_warning_message_raw_data_checkbox.isChecked():
-            headers.append(f"{'原始数据'}")
+            headers.append("原始数据")
 
-        device_warning_message_event_times_1 = ["".join(headers)]
+        device_warning_message_event_times_1 = [headers]
+        parse_errors = []
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62].upper() == "0512":
                 imei = ascii_to_decimal(line[18:48])
-                time_str = hex_to_beijing_time(line[62:70])
-
-                # ✅ 解析KLV（从第70位开始）
-                valid_data_length = int(line[54:58], 16) * 2  # KLV数据的有效长度（单位是字节，所以乘以2）
-                klv_source_data = line[118:58+valid_data_length]
-                klv_data = parse_klv(klv_source_data)
-
+                try:
+                    valid_data_length = int(line[54:58], 16) * 2
+                    if valid_data_length < 12:
+                        raise ValueError("有效数据不足6字节，无法读取协议码和发生时间")
+                    time_str = hex_to_beijing_time(line[62:70])
+                    # 协议码和发生时间后即为 TLV 列表，位置数据408也是可选TLV。
+                    klv_source_data = line[70:58 + valid_data_length]
+                    klv_data = parse_klv(
+                        klv_source_data, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                except (ValueError, OverflowError, OSError) as exc:
+                    # 长度错误时不保留该报文的部分告警，继续处理下一条报文。
+                    parse_errors.append(f"IMEI={imei}：{exc}；原始数据={line}")
+                    continue
 
                 row = []
                 if self.device_warning_message_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.device_warning_message_time_checkbox.isChecked():
-                    row.append(f"{time_str:<23}")
+                    row.append(time_str)
                 if self.device_warning_message_klv_data_checkbox.isChecked():
-                    row.append(f"{klv_data:<20}")
+                    row.append(klv_data)
                 if self.device_warning_message_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                device_warning_message_event_times_1.append("".join(row))
+                device_warning_message_event_times_1.append(row)
 
-        if device_warning_message_event_times_1:
-            self.result_label.setText(f"共找到 {len(device_warning_message_event_times_1) - 1} 个设备告警信息事件")
-            self.raw_data_display.setText("\n".join(device_warning_message_event_times_1))
+        event_count = len(device_warning_message_event_times_1) - 1
+        if event_count or parse_errors:
+            message = f"共找到 {event_count} 个设备告警信息事件"
+            if parse_errors:
+                message += f"，跳过 {len(parse_errors)} 条异常报文（原因见Output）"
+                error_column = headers.index("告警类型") if "告警类型" in headers else 0
+                for error in parse_errors:
+                    error_row = [""] * max(len(headers), 1)
+                    error_row[error_column] = f"解析失败：{error}"
+                    device_warning_message_event_times_1.append(error_row)
+            self.result_label.setText(message)
+            self.raw_data_display.set_table_rows(device_warning_message_event_times_1)
         else:
             self.result_label.setText("未找到设备告警信息")
             self.raw_data_display.setText("")
@@ -8393,37 +8712,40 @@ class DataFetcherApp(QWidget):
     # 6.7 设备信息
     def process_device_info(self, raw_data_string):
         device_info_header_fields = [
-            ("device_info_imei_checkbox", "IMEI", 20),
-            ("device_info_time_checkbox", "触发时间", 19),
-            ("device_info_phone_number_checkbox", "手机号", 14),
-            ("device_info_iccid_checkbox", "ICCID", 22),
-            ("device_info_imsi_checkbox", "IMSI", 17),
-            ("device_info_wifi_mac_checkbox", "WiFi MAC", 19),
-            ("device_info_bt_mac_checkbox", "蓝牙MAC", 19),
-            ("device_info_wifi_mac_5g_checkbox", "5G WiFi MAC", 19),
-            ("device_info_softerware_ble_version_checkbox", "BLE版本", 25),
-            ("device_info_softerware_gnss_version_checkbox", "GNSS版本", 25),
-            ("device_info_softerware_boot_version_checkbox", "BOOT版本", 25),
-            ("device_info_softerware_ap_version_checkbox", "AP版本", 25),
-            ("device_info_mcc_checkbox", "MCC", 6),
-            ("device_info_mnc_checkbox", "MNC", 6),
-            ("device_info_cfg_file_version_checkbox", "配置版本", 10),
-            ("device_info_gl103_workmode_checkbox", "GL103模式", 20),
-            ("device_info_raw_data_checkbox", "原始数据", 100),  # 无需对齐
+            ("device_info_imei_checkbox", "IMEI"),
+            ("device_info_time_checkbox", "触发时间"),
+            ("device_info_phone_number_checkbox", "手机号"),
+            ("device_info_iccid_checkbox", "ICCID"),
+            ("device_info_imsi_checkbox", "IMSI"),
+            ("device_info_wifi_mac_checkbox", "WiFi MAC"),
+            ("device_info_bt_mac_checkbox", "蓝牙MAC"),
+            ("device_info_wifi_mac_5g_checkbox", "5G WiFi MAC"),
+            ("device_info_softerware_ble_version_checkbox", "BLE版本"),
+            ("device_info_softerware_gnss_version_checkbox", "GNSS版本"),
+            ("device_info_softerware_boot_version_checkbox", "BOOT版本"),
+            ("device_info_softerware_ap_version_checkbox", "AP版本"),
+            ("device_info_mcc_checkbox", "MCC"),
+            ("device_info_mnc_checkbox", "MNC"),
+            ("device_info_cfg_file_version_checkbox", "配置版本"),
+            ("device_info_gl103_workmode_checkbox", "GL103模式"),
+            ("device_info_configuration_table_digest_checkbox", "配置表摘要"),
+            ("device_info_activation_status_checkbox", "激活状态"),
+            ("device_info_raw_data_checkbox", "原始数据"),
         ]
         headers = []
-        for attr, label, width in device_info_header_fields:
+        for attr, label in device_info_header_fields:
             checkbox = getattr(self, attr)
             if checkbox.isChecked():
-                if width:
-                    headers.append(f"{label:<{width}}")
-                else:
-                    headers.append(label)
+                headers.append(label)
 
-        device_info_event_times_1 = ["".join(headers)]
+        device_info_event_times_1 = [headers]
+        extension_error_count = 0
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62].upper() == "040C":
+                payload_end = 58 + int(line[54:58], 16) * 2
+                if payload_end < 72:
+                    raise ValueError("设备信息有效数据不足，无法读取时间和手机号长度")
                 imei = ascii_to_decimal(line[18:48])
                 time_str = hex_to_beijing_time(line[62:70])
 
@@ -8433,6 +8755,8 @@ class DataFetcherApp(QWidget):
                 # phone_number = ascii_to_decimal(phone_number_str)
 
                 end_phone_number = 72 + phone_number_len * 2
+                if end_phone_number + 2 > payload_end:
+                    raise ValueError("设备信息手机号长度越界或缺少ICCID长度")
 
                 iccid_len_str = line[end_phone_number:end_phone_number + 2]
                 iccid_len = int(iccid_len_str, 16)
@@ -8441,6 +8765,8 @@ class DataFetcherApp(QWidget):
                 # iccid = ascii_to_decimal(iccid_str)
 
                 end_iccid = end_phone_number + 2 + iccid_len * 2
+                if end_iccid + 2 > payload_end:
+                    raise ValueError("设备信息ICCID长度越界或缺少IMSI长度")
 
                 imsi_len_str = line[end_iccid:end_iccid + 2]
                 imsi_len = int(imsi_len_str, 16)
@@ -8449,6 +8775,8 @@ class DataFetcherApp(QWidget):
                 # imsi = ascii_to_decimal(imsi_str)
 
                 end_imsi = end_iccid + 2 + imsi_len * 2
+                if end_imsi + 2 > payload_end:
+                    raise ValueError("设备信息IMSI长度越界或缺少WiFi MAC长度")
 
                 wifi_mac_len_hex = line[end_imsi:end_imsi + 2]
                 wifi_mac_len = int(wifi_mac_len_hex, 16)
@@ -8457,6 +8785,8 @@ class DataFetcherApp(QWidget):
                 # wifi_mac = ascii_to_decimal(wifi_mac_str)
 
                 end_wifi_mac = end_imsi + 2 + wifi_mac_len * 2
+                if end_wifi_mac + 2 > payload_end:
+                    raise ValueError("设备信息WiFi MAC长度越界或缺少蓝牙MAC长度")
 
                 bt_mac_len_hex = line[end_wifi_mac:end_wifi_mac + 2]
                 bt_mac_len = int(bt_mac_len_hex, 16)
@@ -8465,6 +8795,8 @@ class DataFetcherApp(QWidget):
                 # bt_mac = ascii_to_decimal(bt_mac_str)
 
                 end_bt_mac = end_wifi_mac + 2 + bt_mac_len * 2
+                if end_bt_mac + 2 > payload_end:
+                    raise ValueError("设备信息蓝牙MAC长度越界或缺少5G WiFi MAC长度")
 
                 wifi_mac_5g_len_hex = line[end_bt_mac:end_bt_mac + 2]
                 wifi_mac_5g_len = int(wifi_mac_5g_len_hex, 16)
@@ -8473,11 +8805,17 @@ class DataFetcherApp(QWidget):
                 # wifi_mac_5g = ascii_to_decimal(wifi_mac_5g_str)
 
                 end_wifi_mac_5g = end_bt_mac + 2 + wifi_mac_5g_len * 2
+                if end_wifi_mac_5g + 2 > payload_end:
+                    raise ValueError("设备信息5G WiFi MAC长度越界或缺少BLE版本长度")
 
                 software_ble_version_len_hex = line[end_wifi_mac_5g:end_wifi_mac_5g + 2]
                 software_ble_version_len_bit = format(int(software_ble_version_len_hex, 16), '08b')
                 low_6_bits_ble = software_ble_version_len_bit[-6:]  # 取第5到第0位（低6位）
                 software_ble_version_len_result = int(low_6_bits_ble, 2)
+                if software_ble_version_len_result > 62:
+                    raise ValueError("BLE版本长度超过协议规定的62字节")
+                if end_wifi_mac_5g + 2 + software_ble_version_len_result * 2 + 2 > payload_end:
+                    raise ValueError("BLE版本长度越界或缺少GNSS版本长度")
                 software_ble_version_str = line[
                                            end_wifi_mac_5g + 2:end_wifi_mac_5g + 2 + software_ble_version_len_result * 2]
                 software_ble_version = ascii_to_decimal(
@@ -8490,6 +8828,10 @@ class DataFetcherApp(QWidget):
                 software_gnss_version_len_bit = format(int(software_gnss_version_len_hex, 16), '08b')
                 low_6_bits_gnss = software_gnss_version_len_bit[-6:]
                 software_gnss_version_len_result = int(low_6_bits_gnss, 2)
+                if software_gnss_version_len_result > 62:
+                    raise ValueError("GNSS版本长度超过协议规定的62字节")
+                if end_ble_version + 2 + software_gnss_version_len_result * 2 + 2 > payload_end:
+                    raise ValueError("GNSS版本长度越界或缺少BOOT版本长度")
                 software_gnss_version_str = line[
                                             end_ble_version + 2:end_ble_version + 2 + software_gnss_version_len_result * 2]
                 software_gnss_version = ascii_to_decimal(
@@ -8502,6 +8844,10 @@ class DataFetcherApp(QWidget):
                 software_boot_version_len_bit = format(int(software_boot_version_len_hex, 16), '08b')
                 low_6_bits_boot = software_boot_version_len_bit[-6:]
                 software_boot_version_len_result = int(low_6_bits_boot, 2)
+                if software_boot_version_len_result > 62:
+                    raise ValueError("BOOT版本长度超过协议规定的62字节")
+                if end_gnss_version + 2 + software_boot_version_len_result * 2 + 2 > payload_end:
+                    raise ValueError("BOOT版本长度越界或缺少AP版本长度")
                 software_boot_version_str = line[
                                             end_gnss_version + 2:end_gnss_version + 2 + software_boot_version_len_result * 2]
                 software_boot_version = ascii_to_decimal(
@@ -8513,6 +8859,10 @@ class DataFetcherApp(QWidget):
                 software_ap_version_len_bit = format(int(software_ap_version_len_hex, 16), '08b')
                 low_6_bits_ap = software_ap_version_len_bit[-6:]
                 software_ap_version_len_result = int(low_6_bits_ap, 2)
+                if software_ap_version_len_result > 62:
+                    raise ValueError("AP版本长度超过协议规定的62字节")
+                if end_boot_version + 2 + software_ap_version_len_result * 2 + 8 > payload_end:
+                    raise ValueError("AP版本长度越界或缺少MCC和MNC长度")
                 software_ap_version_str = line[
                                           end_boot_version + 2:end_boot_version + 2 + software_ap_version_len_result * 2]
                 software_ap_version = ascii_to_decimal(
@@ -8543,11 +8893,17 @@ class DataFetcherApp(QWidget):
                 # mnc = ascii_to_decimal(mnc_str)
 
                 end_mnc = end_ap_version + 6 + 2 + int(mnc_len, 16) * 2
+                if end_mnc + 2 > payload_end:
+                    raise ValueError("设备信息MNC长度越界或缺少配置版本长度")
 
                 cfg_file_version_len = line[end_mnc:end_mnc + 2]
                 cfg_file_version_len_bit = format(int(cfg_file_version_len, 16), '08b')
                 low_6_bits_cfg = cfg_file_version_len_bit[-6:]
                 cfg_file_version_len_result = int(low_6_bits_cfg, 2)
+                if cfg_file_version_len_result > 62:
+                    raise ValueError("配置版本长度超过协议规定的62字节")
+                if end_mnc + 2 + cfg_file_version_len_result * 2 + 2 > payload_end:
+                    raise ValueError("配置版本长度越界或缺少GL103模式")
                 cfg_file_version_str = line[end_mnc + 2:end_mnc + 2 + cfg_file_version_len_result * 2]
                 cfg_file_version = ascii_to_decimal(cfg_file_version_str) if cfg_file_version_len_result != 0 else "N/A"
                 # cfg_file_version = ascii_to_decimal(cfg_file_version_str)
@@ -8567,39 +8923,70 @@ class DataFetcherApp(QWidget):
                 else:
                     gl103_workmode = gl103_workmode_str
 
+                # 扩展字段紧跟GL103模式，仅从有效数据中读取，不包含校验码和FF补位。
+                extension_start = end_mnc + 2 + cfg_file_version_len_result * 2 + 2
+                extension_hex = line[extension_start:payload_end]
+                if not extension_hex:
+                    configuration_table_digest = "报文未携带"
+                    activation_status = "报文未携带"
+                elif len(extension_hex) == 34:
+                    configuration_table_digest = extension_hex[:32].upper()
+                    activation_status_hex = extension_hex[32:34].upper()
+                    activation_status_map = {
+                        "00": "未激活",
+                        "01": "已激活",
+                        "FF": "不支持",
+                    }
+                    activation_status = (
+                        f"{activation_status_hex}-"
+                        f"{activation_status_map.get(activation_status_hex, '保留值')}"
+                    )
+                else:
+                    extension_error_count += 1
+                    extension_error = (
+                        f"扩展字段长度异常（实际{len(extension_hex) // 2}字节，应为17字节）"
+                    )
+                    configuration_table_digest = extension_error
+                    activation_status = extension_error
+
                 device_info_tail_fields = [
-                    (self.device_info_imei_checkbox, imei, 20),
-                    (self.device_info_time_checkbox, time_str, 23),
-                    (self.device_info_phone_number_checkbox, phone_number, 16),
-                    (self.device_info_iccid_checkbox, iccid, 22),
-                    (self.device_info_imsi_checkbox, imsi, 17),
-                    (self.device_info_wifi_mac_checkbox, wifi_mac, 19),
-                    (self.device_info_bt_mac_checkbox, bt_mac, 19),
-                    (self.device_info_wifi_mac_5g_checkbox, wifi_mac_5g, 19),
-                    (self.device_info_softerware_ble_version_checkbox, software_ble_version, 25),
-                    (self.device_info_softerware_gnss_version_checkbox, software_gnss_version, 25),
-                    (self.device_info_softerware_boot_version_checkbox, software_boot_version, 25),
-                    (self.device_info_softerware_ap_version_checkbox, software_ap_version, 25),
-                    (self.device_info_mcc_checkbox, mcc, 6),
-                    (self.device_info_mnc_checkbox, mnc, 6),
-                    (self.device_info_cfg_file_version_checkbox, cfg_file_version, 10),
-                    (self.device_info_gl103_workmode_checkbox, gl103_workmode, 20),
+                    (self.device_info_imei_checkbox, imei),
+                    (self.device_info_time_checkbox, time_str),
+                    (self.device_info_phone_number_checkbox, phone_number),
+                    (self.device_info_iccid_checkbox, iccid),
+                    (self.device_info_imsi_checkbox, imsi),
+                    (self.device_info_wifi_mac_checkbox, wifi_mac),
+                    (self.device_info_bt_mac_checkbox, bt_mac),
+                    (self.device_info_wifi_mac_5g_checkbox, wifi_mac_5g),
+                    (self.device_info_softerware_ble_version_checkbox, software_ble_version),
+                    (self.device_info_softerware_gnss_version_checkbox, software_gnss_version),
+                    (self.device_info_softerware_boot_version_checkbox, software_boot_version),
+                    (self.device_info_softerware_ap_version_checkbox, software_ap_version),
+                    (self.device_info_mcc_checkbox, mcc),
+                    (self.device_info_mnc_checkbox, mnc),
+                    (self.device_info_cfg_file_version_checkbox, cfg_file_version),
+                    (self.device_info_gl103_workmode_checkbox, gl103_workmode),
+                    (self.device_info_configuration_table_digest_checkbox, configuration_table_digest),
+                    (self.device_info_activation_status_checkbox, activation_status),
                     # 原始数据列已经通过下面的复选框判断追加，这里不要重复放入字段列表。
                 ]
 
                 row = []
-                for checkbox, value, width in device_info_tail_fields:
+                for checkbox, value in device_info_tail_fields:
                     if checkbox.isChecked():
-                        row.append(f"{value:<{width}}")
+                        row.append(str(value))
 
                 if self.device_info_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                device_info_event_times_1.append("".join(row))
+                device_info_event_times_1.append(row)
 
-        if device_info_event_times_1:
-            self.result_label.setText(f"共找到 {len(device_info_event_times_1) - 1} 个设备信息事件")
-            self.raw_data_display.setText("\n".join(device_info_event_times_1))
+        if len(device_info_event_times_1) > 1:
+            result_text = f"共找到 {len(device_info_event_times_1) - 1} 个设备信息事件"
+            if extension_error_count:
+                result_text += f"，其中 {extension_error_count} 条扩展字段长度异常，应为17字节"
+            self.result_label.setText(result_text)
+            self.raw_data_display.set_table_rows(device_info_event_times_1)
         else:
             self.result_label.setText("未找到设备信息事件")
             self.raw_data_display.setText("")
@@ -9151,17 +9538,18 @@ class DataFetcherApp(QWidget):
     def process_movement_detection(self, raw_data_string):
         headers = []
         if self.movement_detection_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.movement_detection_time_checkbox.isChecked():
-            headers.append(f"{'触发时间':<19}")
+            headers.append("触发时间")
         if self.movement_detection_movement_state_checkbox.isChecked():
-            headers.append(f"{'运动状态':<18}")
+            headers.append("运动状态")
         if self.movement_detection_location_data_checkbox.isChecked():
             headers.append(f"{'Location Data 1'}")
         if self.movement_detection_raw_data_checkbox.isChecked():
             headers.append(f"{'原始数据'}")
 
-        movement_detection_event_times_1 = ["".join(headers)]
+        movement_detection_event_times_1 = [headers]
+        parse_error_count = 0
 
         movement_state_map = {
             "00": "Quit movement state",
@@ -9170,34 +9558,40 @@ class DataFetcherApp(QWidget):
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62].upper() == "0419":
-                if len(line) < 110:
-                    continue
                 imei = ascii_to_decimal(line[18:48])
-                time_str = hex_to_beijing_time(line[62:70])
-                movement_state_hex = line[70:72].upper()
-                movement_state = movement_state_map.get(movement_state_hex, movement_state_hex)
-                location_data_hex = line[72:110]
-                location_data = parse_klv(location_data_hex) if location_data_hex else ""
-                if not location_data:
-                    location_data = location_data_hex
+                time_str = movement_state = "-"
+                try:
+                    payload_end = 58 + int(line[54:58], 16) * 2
+                    if payload_end < 110:
+                        raise ValueError("有效数据不足26字节，缺少时间、运动状态或位置TLV")
+                    time_str = hex_to_beijing_time(line[62:70])
+                    movement_state_hex = line[70:72].upper()
+                    movement_state = movement_state_map.get(movement_state_hex, movement_state_hex)
+                    location_data_hex = line[72:payload_end]
+                    location_data = parse_klv(location_data_hex, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    location_data = f"解析失败：{exc}"
 
                 row = []
                 if self.movement_detection_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.movement_detection_time_checkbox.isChecked():
-                    row.append(f"{time_str:<23}")
+                    row.append(time_str)
                 if self.movement_detection_movement_state_checkbox.isChecked():
-                    row.append(f"{movement_state:<22}")
+                    row.append(movement_state)
                 if self.movement_detection_location_data_checkbox.isChecked():
-                    row.append(f"{location_data:<25}")
+                    row.append(location_data)
                 if self.movement_detection_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                movement_detection_event_times_1.append("".join(row))
+                movement_detection_event_times_1.append(row)
 
-        if movement_detection_event_times_1:
+        if len(movement_detection_event_times_1) > 1:
             self.result_label.setText(f"共找到 {len(movement_detection_event_times_1) - 1} 个运动检测事件")
-            self.raw_data_display.setText("\n".join(movement_detection_event_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条解析失败（原因见Output）")
+            self.raw_data_display.set_table_rows(movement_detection_event_times_1)
         else:
             self.result_label.setText("未找到运动检测事件")
             self.raw_data_display.setText("")
@@ -9681,36 +10075,45 @@ class DataFetcherApp(QWidget):
     def process_few_sensor_data(self, raw_data_string):
         headers = []
         if self.few_sensor_data_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.few_sensor_data_klv_data_checkbox.isChecked():
             headers.append(f"{'KLV数据'}")
         if self.few_sensor_data_raw_data_checkbox.isChecked():
             headers.append(f"{'原始数据'}")
 
-        few_sensor_data_event_times_1 = ["".join(headers)]
+        few_sensor_data_event_times_1 = [headers]
+        parse_error_count = 0
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62].upper() == "042A":
-                if len(line) < 70:
-                    continue
                 imei = ascii_to_decimal(line[18:48])
-                effective_data_length = int(line[54:58], 16) * 2
-                klv_source_data = line[70:58 + effective_data_length]
-                klv_data = parse_klv(klv_source_data, separator=StripedTextEdit.CELL_LINE_BREAK)
+                try:
+                    effective_data_length = int(line[54:58], 16) * 2
+                    if effective_data_length < 12:
+                        raise ValueError("有效数据不足6字节，无法读取协议码和采集时间")
+                    collection_time = hex_to_beijing_time(line[62:70])
+                    klv_source_data = line[70:58 + effective_data_length]
+                    klv_data = parse_klv(klv_source_data, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                    klv_data = f"首组采集时间={collection_time}（北京时间）" + StripedTextEdit.CELL_LINE_BREAK + klv_data
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    klv_data = f"解析失败：{exc}"
 
                 row = []
                 if self.few_sensor_data_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.few_sensor_data_klv_data_checkbox.isChecked():
                     row.append(klv_data)
                 if self.few_sensor_data_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                few_sensor_data_event_times_1.append("".join(row))
+                few_sensor_data_event_times_1.append(row)
 
-        if few_sensor_data_event_times_1:
+        if len(few_sensor_data_event_times_1) > 1:
             self.result_label.setText(f"共找到 {len(few_sensor_data_event_times_1) - 1} 个少量传感器数据事件")
-            self.raw_data_display.setText("\n".join(few_sensor_data_event_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条解析失败（原因见Output）")
+            self.raw_data_display.set_table_rows(few_sensor_data_event_times_1)
         else:
             self.result_label.setText("未找到少量传感器数据事件")
             self.raw_data_display.setText("")
@@ -9719,36 +10122,44 @@ class DataFetcherApp(QWidget):
     def process_device_collected_data(self, raw_data_string):
         headers = []
         if self.device_collected_data_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.device_collected_data_klv_data_checkbox.isChecked():
             headers.append(f"{'KLV数据'}")
         if self.device_collected_data_raw_data_checkbox.isChecked():
             headers.append(f"{'原始数据'}")
 
-        device_collected_data_event_times_1 = ["".join(headers)]
+        device_collected_data_event_times_1 = [headers]
+        parse_error_count = 0
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62].upper() == "042B":
-                if len(line) < 62:
-                    continue
                 imei = ascii_to_decimal(line[18:48])
-                effective_data_length = int(line[54:58], 16) * 2
-                klv_source_data = line[62:58 + effective_data_length]
-                klv_data = parse_klv(klv_source_data, separator=StripedTextEdit.CELL_LINE_BREAK)
+                try:
+                    effective_data_length = int(line[54:58], 16) * 2
+                    # 6.29没有独立的上报时间；协议码后直接按实际出现的TLV读取。
+                    klv_source_data = line[62:58 + effective_data_length]
+                    klv_data = parse_klv(klv_source_data, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                    if not klv_data:
+                        klv_data = "报文未携带采集TLV"
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    klv_data = f"解析失败：{exc}"
 
                 row = []
                 if self.device_collected_data_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.device_collected_data_klv_data_checkbox.isChecked():
                     row.append(klv_data)
                 if self.device_collected_data_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                device_collected_data_event_times_1.append("".join(row))
+                device_collected_data_event_times_1.append(row)
 
-        if device_collected_data_event_times_1:
+        if len(device_collected_data_event_times_1) > 1:
             self.result_label.setText(f"共找到 {len(device_collected_data_event_times_1) - 1} 个设备采集数据事件")
-            self.raw_data_display.setText("\n".join(device_collected_data_event_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条解析失败（原因见Output）")
+            self.raw_data_display.set_table_rows(device_collected_data_event_times_1)
         else:
             self.result_label.setText("未找到设备采集数据事件")
             self.raw_data_display.setText("")
@@ -9757,17 +10168,18 @@ class DataFetcherApp(QWidget):
     def process_flight_mode_detection(self, raw_data_string):
         headers = []
         if self.flight_mode_detection_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.flight_mode_detection_time_checkbox.isChecked():
-            headers.append(f"{'触发时间':<19}")
+            headers.append("触发时间")
         if self.flight_mode_detection_flight_mode_state_checkbox.isChecked():
-            headers.append(f"{'飞行模式状态':<16}")
+            headers.append("飞行模式状态")
         if self.flight_mode_detection_location_data_checkbox.isChecked():
             headers.append(f"{'Location Data 1'}")
         if self.flight_mode_detection_raw_data_checkbox.isChecked():
             headers.append(f"{'原始数据'}")
 
-        flight_mode_detection_event_times_1 = ["".join(headers)]
+        flight_mode_detection_event_times_1 = [headers]
+        parse_error_count = 0
 
         flight_mode_map = {
             "00": "Exit Flight Mode",
@@ -9776,34 +10188,40 @@ class DataFetcherApp(QWidget):
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "03" and line[58:62].upper() == "042C":
-                if len(line) < 110:
-                    continue
                 imei = ascii_to_decimal(line[18:48])
-                time_str = hex_to_beijing_time(line[62:70])
-                flight_mode_hex = line[70:72].upper()
-                flight_mode_state = flight_mode_map.get(flight_mode_hex, flight_mode_hex)
-                location_data_hex = line[72:110]
-                location_data = parse_klv(location_data_hex) if location_data_hex else ""
-                if not location_data:
-                    location_data = location_data_hex
+                time_str = flight_mode_state = "-"
+                try:
+                    payload_end = 58 + int(line[54:58], 16) * 2
+                    if payload_end < 110:
+                        raise ValueError("有效数据不足26字节，缺少时间、飞行状态或位置TLV")
+                    time_str = hex_to_beijing_time(line[62:70])
+                    flight_mode_hex = line[70:72].upper()
+                    flight_mode_state = flight_mode_map.get(flight_mode_hex, flight_mode_hex)
+                    location_data_hex = line[72:payload_end]
+                    location_data = parse_klv(location_data_hex, separator=StripedTextEdit.CELL_LINE_BREAK, strict=True)
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    location_data = f"解析失败：{exc}"
 
                 row = []
                 if self.flight_mode_detection_imei_checkbox.isChecked():
-                    row.append(f"{imei:<20}")
+                    row.append(imei)
                 if self.flight_mode_detection_time_checkbox.isChecked():
-                    row.append(f"{time_str:<23}")
+                    row.append(time_str)
                 if self.flight_mode_detection_flight_mode_state_checkbox.isChecked():
-                    row.append(f"{flight_mode_state:<20}")
+                    row.append(flight_mode_state)
                 if self.flight_mode_detection_location_data_checkbox.isChecked():
-                    row.append(f"{location_data:<25}")
+                    row.append(location_data)
                 if self.flight_mode_detection_raw_data_checkbox.isChecked():
                     row.append(line)
 
-                flight_mode_detection_event_times_1.append("".join(row))
+                flight_mode_detection_event_times_1.append(row)
 
-        if flight_mode_detection_event_times_1:
+        if len(flight_mode_detection_event_times_1) > 1:
             self.result_label.setText(f"共找到 {len(flight_mode_detection_event_times_1) - 1} 个飞行模式检测事件")
-            self.raw_data_display.setText("\n".join(flight_mode_detection_event_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条解析失败（原因见Output）")
+            self.raw_data_display.set_table_rows(flight_mode_detection_event_times_1)
         else:
             self.result_label.setText("未找到飞行模式检测事件")
             self.raw_data_display.setText("")
@@ -10982,179 +11400,106 @@ class DataFetcherApp(QWidget):
     def process_query_fence_to_device(self, raw_data_string):
         headers = []
         if self.query_fence_to_device_imei_checkbox.isChecked():
-            headers.append(f"{'IMEI':<20}")
+            headers.append("IMEI")
         if self.query_fence_to_device_total_num_checkbox.isChecked():
-            headers.append(f"{'围栏总数':<6}")
+            headers.append("围栏总数")
         if self.query_fence_to_device_start_id_checkbox.isChecked():
-            headers.append(f"{'开始ID':<6}")
+            headers.append("开始ID")
         if self.query_fence_to_device_message_num_checkbox.isChecked():
-            headers.append(f"{'消息数':<5}")
+            headers.append("消息数")
         if self.query_fence_to_device_fence_data_checkbox.isChecked():
-            headers.append(f"{'围栏消息':<120}")
+            headers.append("围栏消息")
         if self.query_fence_to_device_raw_data_checkbox.isChecked():
-            headers.append(f"{'原始数据':<20}")
+            headers.append("原始数据")
 
-        process_query_fence_to_device_event_times_1 = ["".join(headers)]
+        process_query_fence_to_device_event_times_1 = [headers]
+        parse_error_count = 0
 
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] == "04" and line[58:62].upper() == "F110":
                 imei = ascii_to_decimal(line[18:48])
-                operate_num = int(line[62:64], 16)
-                start_id = int(line[64:66], 16)
-                message_num = int(line[66:68], 16)
-
-                effective_data_length = int(line[54:58], 16)
-                effective_data = line[58:58 + effective_data_length * 2]  # 按有效数据长度截取日志内容
-                effective_data_len = len(effective_data)
-                log_data_hex = line[68:58 + effective_data_len].upper()  # Log data: 41-N字节 → 82~结束
-                print(log_data_hex)
-
-                klv_data = log_data_hex
-                offset = 0
-
-                while offset + 4 <= len(klv_data):
-                    geo_id_hex = klv_data[offset:offset + 2]
-                    offset += 2
-
-                    data_len_hex = klv_data[offset:offset + 2]
-                    data_len = int(data_len_hex, 16)
-                    offset += 2
-
-                    data_end = offset + data_len * 2
-                    if data_end > len(klv_data):
-                        break
-
-                    data = klv_data[offset:data_end]
-                    offset = data_end
-
-                    if len(data) < 10:
-                        continue
-
-                    geo_mode_hex = data[0:2]
-                    point_num_hex = data[2:4]
-                    key_hex = data[4:8]
-                    value_len_hex = data[8:10]
-                    value_hex = data[10:]
-
-                    geo_id = int(geo_id_hex, 16)
-                    geo_mode = {
-                        "00": "禁用",
-                        "01": "进入",
-                        "02": "退出",
-                        "03": "进出"
-                    }.get(geo_mode_hex.upper(), "未知")
-
-                    point_num = int(point_num_hex, 16)
-                    key_dec = int(key_hex, 16)
-                    value_len = int(value_len_hex, 16)
-
-                    if point_num == 1:
-                        fence_type = "圆形"
-                    elif point_num == 2:
-                        fence_type = "矩形"
-                    elif 3 <= point_num <= 10:
-                        fence_type = "多边形"
+                operate_num = start_id = message_num = "-"
+                fence_rows = []
+                try:
+                    payload_end = 58 + int(line[54:58], 16) * 2
+                    payload = line[62:payload_end].upper()
+                    if len(payload) < 2:
+                        raise ValueError("缺少围栏总数")
+                    operate_num = int(payload[:2], 16)
+                    if operate_num == 0:
+                        if payload not in ("00", "000000"):
+                            raise ValueError("围栏总数为0但仍携带未定义数据")
+                        fence_rows.append("设备未存储围栏")
                     else:
-                        fence_type = "未知"
+                        if len(payload) < 6:
+                            raise ValueError("缺少开始ID或消息数")
+                        start_id = int(payload[2:4], 16)
+                        message_num = int(payload[4:6], 16)
+                        offset = 6
+                        for _ in range(message_num):
+                            if offset + 4 > len(payload):
+                                raise ValueError("围栏ID或数据长度不完整")
+                            geo_id = int(payload[offset:offset + 2], 16)
+                            data_len = int(payload[offset + 2:offset + 4], 16)
+                            offset += 4
+                            if offset + 10 > len(payload):
+                                raise ValueError(f"围栏{geo_id}缺少模式、点数或TLV头部")
+                            value_len = int(payload[offset + 8:offset + 10], 16)
+                            # 兼容旧协议示例：外层长度只计模式、点数和Value，不计3字节TLV头。
+                            if data_len not in (2 + value_len, 5 + value_len):
+                                raise ValueError(f"围栏{geo_id}的TLV长度与外层数据长度不符")
+                            data_end = offset + (5 + value_len) * 2
+                            if data_end > len(payload):
+                                raise ValueError(f"围栏{geo_id}数据不足：TLV声明{value_len}字节")
+                            data = payload[offset:data_end]
+                            offset = data_end
+                            geo_mode = {"00": "禁用", "01": "进入", "02": "退出", "03": "进出"}.get(
+                                data[:2], f"保留值({data[:2]})")
+                            point_num = int(data[2:4], 16)
+                            key_dec = int(data[4:8], 16)
+                            expected_key = 404 if point_num == 1 else 405 if point_num == 2 else 406
+                            if not 1 <= point_num <= 10 or key_dec != expected_key:
+                                raise ValueError(f"围栏{geo_id}点数{point_num}与Key {key_dec}不匹配")
+                            if point_num >= 3 and value_len != point_num * 8:
+                                raise ValueError(f"围栏{geo_id}的坐标长度与点数不符")
+                            gps_info = parse_klv(data[4:], strict=True)
+                            fence_type = "圆形" if point_num == 1 else "矩形" if point_num == 2 else "多边形"
+                            fence_rows.append(
+                                f"围栏ID:{geo_id},长度:{data_len},上报方式:{geo_mode},类型:{fence_type},"
+                                f"KEY:{key_dec},经纬度数据长度:{value_len}"
+                                + StripedTextEdit.CELL_LINE_BREAK + gps_info)
+                        if offset != len(payload):
+                            raise ValueError("围栏消息数与剩余数据不符")
+                except (ValueError, OverflowError, OSError) as exc:
+                    parse_error_count += 1
+                    fence_rows.append(f"解析失败：{exc}")
 
-                    gps_info_list = []
-                    gps_offset = 0
-
-                    if point_num == 1:
-                        # 圆形：经度4字节 + 纬度4字节 + 半径3字节
-                        if len(value_hex) >= 22:
-                            lon_hex = value_hex[gps_offset:gps_offset + 8]
-                            gps_offset += 8
-
-                            lat_hex = value_hex[gps_offset:gps_offset + 8]
-                            gps_offset += 8
-
-                            radius_hex = value_hex[gps_offset:gps_offset + 6]
-
-                            lon_raw = int(lon_hex, 16)
-                            lat_raw = int(lat_hex, 16)
-
-                            lon_dir_bit = (lon_raw >> 31) & 1
-                            lat_dir_bit = (lat_raw >> 31) & 1
-
-                            lon_value = (lon_raw & 0x7FFFFFFF) / 100000
-                            lat_value = (lat_raw & 0x7FFFFFFF) / 100000
-
-                            lon_dir = "西经" if lon_dir_bit == 1 else "东经"
-                            lat_dir = "北纬" if lat_dir_bit == 1 else "南纬"
-
-                            radius = int(radius_hex, 16)
-
-                            gps_info_list.append(
-                                f"经度:{lon_dir}{lon_value:.5f},"
-                                f"纬度:{lat_dir}{lat_value:.5f},"
-                                f"半径:{radius}"
-                            )
-
-                    elif 2 <= point_num <= 10:
-                        # 矩形/多边形：每组 经度4字节 + 纬度4字节
-                        for i in range(point_num):
-                            if gps_offset + 16 > len(value_hex):
-                                break
-
-                            lon_hex = value_hex[gps_offset:gps_offset + 8]
-                            gps_offset += 8
-
-                            lat_hex = value_hex[gps_offset:gps_offset + 8]
-                            gps_offset += 8
-
-                            lon_raw = int(lon_hex, 16)
-                            lat_raw = int(lat_hex, 16)
-
-                            lon_dir_bit = (lon_raw >> 31) & 1
-                            lat_dir_bit = (lat_raw >> 31) & 1
-
-                            lon_value = (lon_raw & 0x7FFFFFFF) / 100000
-                            lat_value = (lat_raw & 0x7FFFFFFF) / 100000
-
-                            lon_dir = "西经" if lon_dir_bit == 1 else "东经"
-                            lat_dir = "北纬" if lat_dir_bit == 1 else "南纬"
-
-                            gps_info_list.append(
-                                f"点{i + 1}:经度:{lon_dir}{lon_value:.5f},"
-                                f"纬度:{lat_dir}{lat_value:.5f}"
-                            )
-
-                    fence_data = (
-                        f"围栏ID:{geo_id},"
-                        f"长度:{data_len},"
-                        f"上报方式:{geo_mode},"
-                        f"类型:{fence_type},"
-                        f"KEY:{key_dec},"
-                        f"经纬度数据长度:{value_len},"
-                        f"{'；'.join(gps_info_list)}  "
-                    )
-
+                for fence_data in fence_rows:
                     row = []
-
                     if self.query_fence_to_device_imei_checkbox.isChecked():
-                        row.append(f"{imei:<20}")
+                        row.append(imei)
                     if self.query_fence_to_device_total_num_checkbox.isChecked():
-                        row.append(f"{operate_num:<10}")
+                        row.append(str(operate_num))
                     if self.query_fence_to_device_start_id_checkbox.isChecked():
-                        row.append(f"{start_id:<8}")
+                        row.append(str(start_id))
                     if self.query_fence_to_device_message_num_checkbox.isChecked():
-                        row.append(f"{message_num:<8}")
+                        row.append(str(message_num))
                     if self.query_fence_to_device_fence_data_checkbox.isChecked():
-                        row.append(f"{fence_data:<120}")
+                        row.append(fence_data)
                     if self.query_fence_to_device_raw_data_checkbox.isChecked():
                         row.append(line)
-
-                    process_query_fence_to_device_event_times_1.append("".join(row))
+                    process_query_fence_to_device_event_times_1.append(row)
 
         if len(process_query_fence_to_device_event_times_1) > 1:
             self.result_label.setText(
                 f"共找到 {len(process_query_fence_to_device_event_times_1) - 1} 个电子围栏查询事件"
             )
-            self.raw_data_display.setText("\n".join(process_query_fence_to_device_event_times_1))
+            if parse_error_count:
+                self.result_label.setText(self.result_label.text() + f"，其中{parse_error_count}条报文解析异常（原因见Output）")
+            self.raw_data_display.set_table_rows(process_query_fence_to_device_event_times_1)
         else:
             self.result_label.setText("未找到电子围栏查询事件")
-            self.raw_data_display.setText("\n".join(process_query_fence_to_device_event_times_1))
+            self.raw_data_display.set_table_rows(process_query_fence_to_device_event_times_1)
 
 
     # 8.13 Request RAW CAN Frame
@@ -11829,11 +12174,6 @@ class DataFetcherApp(QWidget):
         headers = build_checkbox(header_fields, self)
         result_rows = ["".join(headers)]
 
-        door_state_map = {
-            "00": "未关闭",
-            "01": "已关闭",
-        }
-
         for line in self._iter_valid_raw_lines(raw_data_string):
             if line[48:50] != "03" or line[58:62].upper() != "0606":
                 continue
@@ -11979,7 +12319,10 @@ class DataFetcherApp(QWidget):
 
                 door_state = "N/A"
                 tlv_offset = mac_end
-                while tlv_offset + 6 <= len(package):
+                while tlv_offset < len(package):
+                    if tlv_offset + 6 > len(package):
+                        door_state = "TLV头部长度异常"
+                        break
                     tlv_key = package[tlv_offset:tlv_offset + 4].upper()
                     try:
                         tlv_length = int(package[tlv_offset + 4:tlv_offset + 6], 16)
@@ -11994,13 +12337,7 @@ class DataFetcherApp(QWidget):
                         break
 
                     if tlv_key == "00D3":
-                        if tlv_length == 1:
-                            door_state_hex = package[tlv_value_start:tlv_value_end].upper()
-                            door_state = door_state_map.get(
-                                door_state_hex, f"Unknown({door_state_hex})"
-                            )
-                        else:
-                            door_state = f"长度异常({tlv_length})"
+                        door_state = handle_value(211, package[tlv_value_start:tlv_value_end])
 
                     tlv_offset = tlv_value_end
 

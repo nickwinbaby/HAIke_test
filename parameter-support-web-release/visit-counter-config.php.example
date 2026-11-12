@@ -1,0 +1,10 @@
+<?php
+// Copy this file to visit-counter-config.php on the server and fill in the
+// password. Do not expose or share the completed configuration file.
+define('DB_HOST', '127.0.0.1');
+define('DB_PORT', '3306');
+define('DB_NAME', 'parameter_support_stats');
+define('DB_USER', 'parameter_stats');
+define('DB_PASSWORD', 'REPLACE_WITH_A_STRONG_PASSWORD');
+// Use a different password for opening visit details in the webpage.
+define('VISIT_ADMIN_PASSWORD', 'REPLACE_WITH_A_DIFFERENT_ADMIN_PASSWORD');

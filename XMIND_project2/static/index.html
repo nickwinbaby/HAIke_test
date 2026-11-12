@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f8">
+  <link rel="icon" href="/static/XMind_web.ico?v=1" type="image/x-icon" sizes="any">
+  <link rel="shortcut icon" href="/static/XMind_web.ico?v=1" type="image/x-icon">
+  <title>GNN · 协作思维导图</title>
+  <link rel="stylesheet" href="/static/style.css?v=4">
+  <link rel="stylesheet" href="/static/refinements.css?v=4">
+  <link rel="stylesheet" href="/static/workspace.css?v=31">
+  <script src="/static/app.js?v=34" defer></script>
+</head>
+<body class="identity-pending">
+  <aside class="sidebar">
+    <a class="brand" href="/" aria-label="GNN 首页"><span class="brand-mark"><img src="/static/XMind_web.ico?v=1" alt=""></span><span>GNN<small>COLLABORATIVE MIND MAP</small></span></a>
+    <div class="workspace-label">你的工作空间 <span class="tag">本地版</span></div>
+    <button id="newDoc" class="primary wide">＋ 新建思维导图</button>
+    <button id="importDoc" class="secondary wide">↥ 导入 XMind / JSON</button>
+    <input id="fileInput" type="file" accept=".xmind,.json" hidden>
+    <div class="section-heading"><div class="section-label">全部导图 <span id="docCount">0</span></div><button id="trash" class="sidebar-link" title="打开回收站">回收站</button></div>
+    <nav id="documents" aria-label="导图列表"></nav>
+    <div class="sidebar-bottom">
+      <div class="lan-note"><span class="tiny-dot"></span> 同一网络，一起编辑</div>
+      <label class="name-label" for="userName">本次显示名称</label>
+      <input id="userName" maxlength="24" readonly aria-readonly="true">
+      <p>姓名用于协作与历史记录。当前没有账号认证，请仅在可信局域网使用。</p>
+    </div>
+  </aside>
+
+  <main>
+    <header class="topbar">
+      <div class="breadcrumb"><button id="toggleSidebar" title="展开/收起工作空间" aria-label="展开/收起工作空间">☰</button><span class="breadcrumb-label">工作空间 /</span> <strong id="docTitle">正在打开…</strong><button id="renameDoc" class="title-action" title="重命名导图" disabled>重命名</button></div>
+      <div class="header-actions"><button id="onlinePresence" class="online-presence" title="查看在线成员"><span id="avatars" class="avatars"></span><span id="onlineCount">0 人在线</span></button><button id="storage" title="保存位置与备份">本地保存</button><button id="toggleInspector" title="展开/收起节点详情">节点详情</button><button id="share" class="primary small">↗ 分享协作</button></div>
+    </header>
+    <div class="toolbar">
+      <div class="tool-group"><button id="undo" title="撤销 Ctrl+Z" disabled>撤销</button><button id="redo" title="重做 Ctrl+Shift+Z / Ctrl+Y" disabled>重做</button><span class="divider"></span><button id="addChild" title="添加子主题 Tab">＋ 子主题</button><button id="addSibling" title="添加同级主题 Enter">⊞ 同级</button><button id="addParent" title="插入父主题">父主题</button><span class="divider"></span><button id="relationship" title="添加关系线">关系</button><button id="boundary" title="为当前分支添加边界">边界</button><button id="summary" title="为当前分支添加概要">概要</button><span class="divider"></span><button id="search" title="搜索 Ctrl+F">搜索</button><button id="outline" title="大纲视图">大纲</button><button id="focusBranchTop" title="只显示所选节点及其全部后代，修改仍保存到原导图">分支视图</button><button id="moreTools" title="更多操作">更多</button><button id="collapse">⊟ 折叠</button><button id="deleteNode" class="danger">⌫ 删除</button></div>
+      <div class="tool-group"><span id="saveStatus" class="save-status">连接中</span><button id="history">◷ 历史</button><button id="export">↧ 导出</button><button id="help" title="使用帮助">?</button></div>
+    </div>
+    <div class="editor">
+      <section id="canvas" class="canvas" aria-label="思维导图画布" tabindex="0">
+        <div class="canvas-caption"><span class="eyebrow">MIND SPACE</span><span>双击就地编辑 · Enter 确认 · Ctrl+Z 撤销</span></div>
+        <div id="focusBar" class="focus-bar" hidden aria-label="分支视图导航">
+          <div class="focus-navigation"><button id="focusBack" title="恢复进入分支前的视图">← 返回上层</button><nav id="focusPath" aria-label="当前分支路径"></nav><button id="focusAll">返回全图</button></div>
+          <small id="focusCount"></small>
+        </div>
+        <div class="lineage-legend" aria-label="节点标识说明"><span>选中节点</span><span>祖先路径</span><span>下属分支</span></div>
+        <svg id="map" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="思维导图"><g id="viewport"><g id="annotations"></g><g id="edges"></g><g id="relations"></g><g id="nodes"></g><g id="relationLabels"></g></g></svg>
+        <textarea id="inlineEditor" aria-label="就地编辑节点" hidden spellcheck="false"></textarea>
+        <div id="empty" class="empty" hidden><h2>打开一张导图，开始思考</h2><p>新建导图，或导入已有的 XMind 文件。</p></div>
+        <div class="canvas-hint">拖动平移 <span>·</span> 滚轮上下 <span>·</span> Ctrl + 滚轮缩放 <span>·</span> 双击编辑</div>
+        <div class="zoom-controls"><button id="zoomOut" aria-label="缩小">−</button><span id="zoomValue">100%</span><button id="zoomIn" aria-label="放大">＋</button><span class="divider"></span><button id="fit" title="适应画布">⊡</button></div>
+      </section>
+      <aside class="inspector">
+        <div class="inspector-heading"><span>节点详情</span><span class="tag" id="nodeKind">中心主题</span></div>
+        <div id="inspectorBody">
+          <div class="field-label">主题文字 <span>支持长文本</span></div>
+          <label class="sr-only" for="nodeTitle">主题文字</label><textarea id="nodeTitle" rows="3" placeholder="选择一个节点"></textarea>
+          <div class="inspector-tabs" role="tablist"><button class="active" data-panel="nodePanel">节点</button><button data-panel="mapPanel">画布</button></div>
+          <div id="nodePanel" class="inspector-panel">
+          <div class="field-label">节点颜色</div><div id="colors" class="colors" role="group" aria-label="节点颜色"></div>
+          <div class="field-label">形状与文字</div><div class="compact-grid"><select id="nodeShape" aria-label="节点形状"><option value="underline" selected>下划线</option><option value="roundedRect">圆角矩形</option><option value="rectangle">矩形</option><option value="ellipse">椭圆</option><option value="diamond">菱形</option></select><input id="fontSize" type="number" min="10" max="32" aria-label="字号"><button id="bold" title="粗体"><strong>B</strong></button><button id="italic" title="斜体"><em>I</em></button></div>
+          <div class="field-label">自定义颜色</div><div class="color-fields"><label>填充<input id="fillColor" type="color"></label><label>文字<input id="textColor" type="color"></label><label>边框<input id="borderColor" type="color"></label></div>
+          <div class="field-label">标记与任务</div><div class="two-col"><select id="priority"><option value="0">无优先级</option><option value="1">优先级 1</option><option value="2">优先级 2</option><option value="3">优先级 3</option><option value="4">优先级 4</option><option value="5">优先级 5</option></select><select id="progress"><option value="-1">无任务进度</option><option value="0">未开始</option><option value="25">25%</option><option value="50">50%</option><option value="75">75%</option><option value="100">已完成</option></select></div>
+          <div class="field-label">标签</div><input id="labels" maxlength="199" placeholder="用逗号分隔，最多 8 个">
+          <div class="field-label">超链接</div><div class="input-action"><input id="nodeLink" maxlength="2048" placeholder="https://"><button id="openLink" title="打开链接">打开</button></div>
+          <div class="field-label">节点图片</div><div class="input-action"><button id="chooseImage">选择图片</button><button id="removeImage">移除</button><input id="imageInput" type="file" accept="image/png,image/jpeg,image/webp" hidden></div>
+          <div class="field-label">备注 <span>可选</span></div>
+          <label class="sr-only" for="nodeNotes">节点备注</label><textarea id="nodeNotes" maxlength="10000" rows="7" placeholder="补充细节、记录讨论…"></textarea>
+          <button id="saveNode" class="primary wide" disabled>保存修改 <kbd>Ctrl ↵</kbd></button>
+          <p id="draftHint" class="draft-hint">修改后点击保存，实时同步给其他人。</p>
+          <div class="node-meta"><span>子节点 <strong id="childCount">0</strong></span><span>分支节点 <strong id="branchCount">0</strong></span></div>
+          <button id="focusBranch" class="secondary wide" title="仅查看所选节点及其后代，修改仍保存在原导图">仅看此分支</button>
+          <div class="field-label">分支顺序</div><div class="reorder"><button id="moveUp">↑ 上移</button><button id="moveDown">↓ 下移</button></div>
+          <div class="inspector-tip"><span>✧</span><p>一个节点，一个想法。<br>拖动节点到另一个节点上，即可调整层级。</p></div>
+          </div>
+          <div id="mapPanel" class="inspector-panel" hidden>
+            <div class="field-label">结构</div><div id="layouts" class="choice-grid"><button data-value="balanced">思维导图</button><button data-value="right">向右逻辑图</button><button data-value="left">向左逻辑图</button><button data-value="down">组织结构图</button><button data-value="up">向上结构图</button></div>
+            <div class="field-label">主题</div><select id="theme"><option value="original">清爽</option><option value="ocean">海洋</option><option value="forest">森林</option><option value="ink">墨色</option><option value="pastel">柔彩</option><option value="sunset">暖霞</option></select>
+            <div class="field-label">分支线</div><div class="two-col"><select id="lineType"><option value="curve">曲线</option><option value="straight">直线</option><option value="elbow">折线</option></select><select id="lineWidth"><option value="1">细</option><option value="2">标准</option><option value="3">粗</option><option value="4">很粗</option></select></div>
+            <div class="field-label">节点间距</div><select id="spacing"><option value="compact">紧凑</option><option value="normal">标准</option><option value="loose">宽松</option></select>
+            <div class="field-label">画布背景</div><div class="input-action"><input id="background" type="color"><button id="resetBackground">恢复</button></div>
+            <button id="resetStyles" class="secondary wide">清除自定义样式</button>
+          </div>
+        </div>
+      </aside>
+    </div>
+    <footer class="statusbar"><span id="nodeStats">—</span><span id="connection"><span class="tiny-dot"></span> 正在连接</span><span id="storageLabel">保存到本机数据库 · 不覆盖原文件</span></footer>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <div id="contextMenu" class="context-menu" hidden></div>
+  <dialog id="modal"><div class="modal-header"><h2 id="modalTitle"></h2><button id="closeModal" aria-label="关闭">×</button></div><div id="modalBody"></div></dialog>
+  <dialog id="identityGate" class="identity-gate" aria-labelledby="identityTitle">
+    <form id="identityForm" novalidate>
+      <div class="identity-brand"><span class="identity-mark">G</span><span>GNN</span></div>
+      <p class="identity-eyebrow">COLLABORATIVE MIND MAP</p>
+      <h1 id="identityTitle">请输入你的姓名</h1>
+      <p class="identity-intro">你的姓名会显示给当前协作者，并记录在后续修改历史中。</p>
+      <label for="identityName">真实姓名</label>
+      <input id="identityName" maxlength="24" autocomplete="name" placeholder="例如：张三" autofocus>
+      <p id="identityError" class="identity-error" role="alert" aria-live="polite"></p>
+      <button class="primary wide" type="submit">进入 GNN</button>
+      <p class="identity-note">每次打开或刷新都需要重新填写。当前没有账号认证，系统无法核验姓名真实性。</p>
+    </form>
+  </dialog>
+</body>
+</html>

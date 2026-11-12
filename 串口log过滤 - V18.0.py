@@ -42,7 +42,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-# PyInstaller --noconfirm --onefile --windowed --icon "icon.ico" --add-data "icon.ico;." "串口log过滤 - V18.0.py"
+# PyInstaller --noconfirm --onefile --windowed --icon "bulid_photos/icon.ico" --add-data "bulid_photos/icon.ico;bulid_photos" "串口log过滤 - V18.0.py"
 
 version = "18.0"
 Compilation_date = "2026-09-29 00:00:00"
@@ -578,7 +578,7 @@ class SerialPortTool(QWidget):
 
     def initUI(self):
         self.setWindowTitle("RichLink Serial Port Tool V" + version + " --Mangetic-20260929")
-        self.setWindowIcon(QIcon(resource_path("icon.ico")))
+        self.setWindowIcon(QIcon(resource_path("bulid_photos/icon.ico")))
         self.setGeometry(420, 140, 1020, 720)
         self.setMinimumSize(860, 620)
 
@@ -756,6 +756,12 @@ class SerialPortTool(QWidget):
     def save_language_setting(self):
         self.settings["language"] = self.language
         self.save_tool_settings()
+
+    def save_baudrate_setting(self):
+        baudrate = self.baudrate_combo.currentText().strip()
+        if self.is_valid_baudrate(baudrate) and self.settings.get("baudrate") != baudrate:
+            self.settings["baudrate"] = baudrate
+            self.save_tool_settings()
 
     def load_last_log_dir(self):
         folder = str(self.settings.get("last_log_dir", "")).strip()
@@ -1255,6 +1261,9 @@ class SerialPortTool(QWidget):
         self.baudrate_combo = QComboBox()
         self.baudrate_combo.setFixedWidth(110)
         self.baudrate_combo.addItems(["115200", "9600", "19200", "38400", "57600", "460800", "921600"])
+        saved_baudrate = str(self.settings.get("baudrate", "115200")).strip()
+        if self.is_valid_baudrate(saved_baudrate):
+            self.baudrate_combo.setCurrentText(saved_baudrate)
 
         self.connect_button = QPushButton("Connect")
         self.disconnect_button = QPushButton("Disconnect")
@@ -1285,6 +1294,7 @@ class SerialPortTool(QWidget):
         self.connect_button.clicked.connect(self.connect_serial)
         self.disconnect_button.clicked.connect(self.disconnect_serial)
         self.port_combo.currentIndexChanged.connect(self.handle_serial_settings_changed)
+        self.baudrate_combo.currentIndexChanged.connect(self.save_baudrate_setting)
         self.baudrate_combo.currentIndexChanged.connect(self.handle_serial_settings_changed)
 
     def build_filter_bar(self):
@@ -1373,6 +1383,7 @@ class SerialPortTool(QWidget):
 
     def build_content_area(self):
         left_panel = QWidget()
+        left_panel.setMinimumWidth(400)
         left_layout = QVBoxLayout()
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.setSpacing(8)
@@ -1393,6 +1404,7 @@ class SerialPortTool(QWidget):
 
         command_input_layout = QHBoxLayout()
         self.command_input = QLineEdit()
+        self.command_input.setMinimumWidth(100)
         self.command_input.setPlaceholderText(self.tr_text("at_command_placeholder"))
         self.send_button = QPushButton("Send")
         self.newline_checkbox = QCheckBox("Send with Enter")
@@ -1407,6 +1419,9 @@ class SerialPortTool(QWidget):
 
         self.command_history_combo = QComboBox()
         self.command_history_combo.setEditable(False)
+        self.command_history_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.command_history_combo.setMinimumContentsLength(12)
+        self.command_history_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         self.command_history_combo.setItemDelegate(ATCommandHistoryDelegate(self.command_history_combo))
         self.command_history_combo.view().setTextElideMode(Qt.ElideNone)
         self.command_history_combo.currentIndexChanged.connect(self.load_selected_command)
@@ -2659,12 +2674,15 @@ class SerialPortTool(QWidget):
 
     def append_sent_log(self, command, channel):
         timestamp = format_log_timestamp()
+        channel = {"Data": "RL-Data", "Serial": "RL-Serial"}.get(channel, channel)
         if self.language == "zh":
             body = f"已发送[{channel}]: {command}"
         else:
             body = f"Sent[{channel}]: {command}"
         message = self.format_log_line(timestamp, body)
         self.append_html_log(f"<span style='color:#1f62c2;'>{message}</span>")
+        if self.log_file:
+            self.write_log_line(message)
 
     def write_serial_command(self, command):
         return self.write_serial_bytes(command.encode("utf-8"))
@@ -2973,7 +2991,7 @@ def set_windows_app_icon_id():
 if __name__ == "__main__":
     set_windows_app_icon_id()
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(resource_path("icon.ico")))
+    app.setWindowIcon(QIcon(resource_path("bulid_photos/icon.ico")))
     tool = SerialPortTool()
     tool.show()
     sys.exit(app.exec_())

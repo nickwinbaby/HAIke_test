@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JT/T 808 参数调试工具</title>
+<style>
+:root{
+  --bg:#f5f6f8; --panel:#ffffff; --line:#dcdfe6; --line2:#eef0f3;
+  --txt:#1f2329; --txt2:#5c6670; --txt3:#8b949e;
+  --blue:#2b6cb0; --blue-bg:#ebf3fb;
+  --green:#2f855a; --green-bg:#eaf6ef;
+  --red:#c53030; --red-bg:#fdeaea;
+  --amber:#97650a; --amber-bg:#fdf6e3;
+  --gray:#6b7280; --gray-bg:#f2f3f5;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;height:100%}
+body{
+  background:var(--bg); color:var(--txt);
+  font:13px/1.55 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+}
+button{font-family:inherit;cursor:pointer}
+input,select,textarea{font-family:inherit;font-size:13px}
+
+/* ---------- 顶部 ---------- */
+header{
+  background:var(--panel); border-bottom:1px solid var(--line);
+  padding:10px 18px; display:flex; align-items:center; gap:18px;
+  flex-wrap:wrap; position:sticky; top:0; z-index:20;
+}
+header h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.3px}
+header h1 small{font-weight:400;color:var(--txt3);font-size:11px;margin-left:8px}
+.hstat{display:flex;gap:14px;align-items:center;margin-left:auto;font-size:12px;color:var(--txt2);flex-wrap:wrap}
+.dot{width:7px;height:7px;border-radius:50%;display:inline-block;margin-right:5px;vertical-align:1px}
+.dot.on{background:#38a169} .dot.off{background:#cbd5e0}
+.chip{
+  background:var(--gray-bg);border:1px solid var(--line);border-radius:11px;
+  padding:1px 9px;font-size:11px;color:var(--txt2);
+}
+.chip b{color:var(--txt);font-weight:600}
+
+/* ---------- 布局 ---------- */
+.wrap{display:flex;gap:14px;padding:14px;align-items:flex-start;max-width:1800px;margin:0 auto}
+.left{flex:1 1 640px;min-width:520px;display:flex;flex-direction:column;gap:14px}
+.right{flex:1 1 620px;min-width:460px;position:sticky;top:62px}
+@media(max-width:1180px){
+  .wrap{flex-direction:column}
+  .left,.right{min-width:0;width:100%}
+  .right{position:static}
+}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.card>h2{
+  margin:0;padding:9px 14px;font-size:13px;font-weight:600;
+  border-bottom:1px solid var(--line2);background:#fafbfc;
+  display:flex;align-items:center;gap:8px;
+}
+.card>h2 .tag{
+  font-size:10px;font-weight:500;color:#fff;background:var(--blue);
+  border-radius:3px;padding:1px 5px;letter-spacing:.5px;
+}
+.card>h2 .hint{margin-left:auto;font-weight:400;font-size:11px;color:var(--txt3)}
+.card .body{padding:12px 14px}
+
+/* ---------- 设备标识 ---------- */
+.ident{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.field{display:flex;flex-direction:column;gap:4px}
+.field label{font-size:11px;color:var(--txt2)}
+.field input,.field select{
+  height:30px;padding:0 8px;border:1px solid var(--line);border-radius:5px;
+  background:#fff;color:var(--txt);outline:none;transition:.15s;
+}
+.field input:focus,.field select:focus{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-bg)}
+.field input.bad{border-color:var(--red);box-shadow:0 0 0 2px var(--red-bg)}
+#ident{width:210px;font-family:ui-monospace,Consolas,monospace}
+#seqVal,#ackSeqIn{width:96px;font-family:ui-monospace,Consolas,monospace}
+.ident .calc{
+  flex:1 1 240px;font-size:11px;color:var(--txt2);line-height:1.7;
+  background:#fafbfc;border:1px solid var(--line2);border-radius:5px;padding:6px 9px;
+}
+.ident .calc code{font-family:ui-monospace,Consolas,monospace;color:var(--blue);font-size:11px}
+.ident .calc .err{color:var(--red)}
+
+/* ---------- 按钮 ---------- */
+.btn{
+  height:30px;padding:0 14px;border-radius:5px;border:1px solid var(--line);
+  background:#fff;color:var(--txt);font-size:12px;transition:.15s;
+  display:inline-flex;align-items:center;gap:5px;white-space:nowrap;
+}
+.btn:hover{border-color:#c0c4cc;background:#fafbfc}
+.btn:active{transform:translateY(.5px)}
+.btn.primary{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:500}
+.btn.primary:hover{background:#255a94;border-color:#255a94}
+.btn.ghost{background:transparent}
+.btn.sm{height:24px;padding:0 9px;font-size:11px}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.danger{color:var(--red);border-color:#f0c2c2}
+.btn.danger:hover{background:var(--red-bg)}
+
+/* ---------- tab ---------- */
+.tabs{display:flex;gap:0;border-bottom:1px solid var(--line2);background:#fafbfc;padding:0 6px}
+.tabs button{
+  border:none;background:transparent;padding:8px 13px;font-size:12px;color:var(--txt2);
+  border-bottom:2px solid transparent;margin-bottom:-1px;transition:.15s;
+}
+.tabs button:hover{color:var(--txt)}
+.tabs button.active{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.tabpane{display:none}
+.tabpane.active{display:block}
+
+/* ---------- 参数表 ---------- */
+.ptable{width:100%;border-collapse:collapse;font-size:12px}
+.ptable th{
+  text-align:left;font-weight:500;color:var(--txt2);font-size:11px;
+  padding:6px 8px;border-bottom:1px solid var(--line2);background:#fafbfc;
+  position:sticky;top:0;
+}
+.ptable td{padding:5px 8px;border-bottom:1px solid var(--line2);vertical-align:middle}
+.ptable tr:hover td{background:#fcfcfd}
+.ptable tr.unsupported td{opacity:.55}
+.ptable .pid{font-family:ui-monospace,Consolas,monospace;color:var(--blue);font-size:11px;white-space:nowrap}
+.ptable .pname{min-width:150px}
+.ptable .pval{width:230px}
+.ptable .pval input{
+  width:100%;height:26px;padding:0 7px;border:1px solid var(--line);border-radius:4px;
+  font-family:ui-monospace,Consolas,monospace;font-size:12px;outline:none;
+}
+.ptable .pval input:focus{border-color:var(--blue)}
+.ptable .pval input:disabled{background:#f7f8fa;color:var(--txt3)}
+.ptable .prange{font-size:10.5px;color:var(--txt3);white-space:nowrap}
+.ptable .pcur{font-family:ui-monospace,Consolas,monospace;font-size:11px;color:var(--green);
+  background:var(--green-bg);border-radius:3px;padding:1px 6px;white-space:nowrap;
+  display:inline-block;max-width:190px;overflow:hidden;text-overflow:ellipsis}
+.ptable .pcur.none{color:var(--txt3);background:var(--gray-bg)}
+td.ck{width:28px;text-align:center}
+input[type=checkbox]{width:14px;height:14px;accent-color:var(--blue);cursor:pointer;margin:0}
+.unsup{font-size:10px;color:var(--amber);background:var(--amber-bg);border-radius:3px;padding:0 4px}
+
+.toolbar{display:flex;gap:8px;align-items:center;padding:10px 14px;border-top:1px solid var(--line2);background:#fafbfc;flex-wrap:wrap}
+.toolbar .sp{margin-left:auto;display:flex;gap:8px}
+.tbl-wrap{max-height:420px;overflow:auto}
+
+/* ---------- 日志 ---------- */
+#logBox{
+  height:520px;overflow:auto;background:#fbfcfd;font-family:ui-monospace,Consolas,monospace;
+  font-size:11.5px;padding:0;
+}
+.logline{
+  padding:4px 12px;border-bottom:1px solid var(--line2);
+  display:flex;gap:8px;align-items:flex-start;
+}
+.logline:hover{background:#f4f7fa}
+.logline .t{color:var(--txt3);flex:0 0 auto}
+.logline .d{flex:0 0 34px;font-weight:700;text-align:center;border-radius:3px;font-size:10px;padding:1px 0;margin-top:1px}
+.d.RX{color:#1f6fb2;background:#e8f2fb}
+.d.TX{color:#2f855a;background:#eaf6ef}
+.d.INFO{color:var(--gray);background:var(--gray-bg)}
+.d.ERR{color:var(--red);background:var(--red-bg)}
+.logline .c{flex:1;min-width:0;word-break:break-all;white-space:pre-wrap}
+.logline .sum{color:var(--txt)}
+.logline .hex{color:var(--txt3);font-size:10.5px;margin-top:2px;word-break:break-all}
+.logline details{margin-top:3px}
+.logline summary{cursor:pointer;color:var(--blue);font-size:10.5px;user-select:none}
+.logline pre{
+  margin:4px 0 0;padding:7px 9px;background:#f4f6f8;border:1px solid var(--line2);
+  border-radius:4px;font-size:10.5px;color:var(--txt2);overflow:auto;max-height:260px;
+}
+.logline .errmsg{color:var(--red);font-size:11px}
+.logline .note{color:var(--amber);font-size:10.5px}
+.empty{color:var(--txt3);text-align:center;padding:36px 0;font-size:12px}
+
+/* 解析出的参数值卡片 */
+.pval-grid{display:flex;flex-wrap:wrap;gap:5px;margin-top:4px}
+.pval-item{
+  background:#fff;border:1px solid var(--line2);border-radius:4px;padding:2px 7px;
+  font-size:10.5px;
+}
+.pval-item b{color:var(--blue);font-weight:600;font-family:ui-monospace,Consolas,monospace}
+.pval-item span{color:var(--txt)}
+
+/* ---------- 连接列表 ---------- */
+.conn-list{display:flex;flex-direction:column;gap:6px}
+.conn-item{
+  display:flex;align-items:center;gap:9px;padding:6px 9px;border:1px solid var(--line2);
+  border-radius:5px;font-size:11.5px;background:#fafbfc;
+}
+.conn-item.on{border-color:#b7e0c8;background:var(--green-bg)}
+.conn-item .cid{font-weight:600;color:var(--txt)}
+.conn-item .cphone{font-family:ui-monospace,Consolas,monospace;color:var(--blue)}
+.conn-item .cmeta{color:var(--txt3);font-size:10.5px;margin-left:auto}
+
+/* toast */
+#toast{
+  position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(10px);
+  background:#2d3748;color:#fff;padding:9px 18px;border-radius:6px;font-size:12.5px;
+  opacity:0;pointer-events:none;transition:.22s;z-index:99;max-width:80vw;
+}
+#toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+#toast.err{background:#9b2c2c}
+#toast.ok{background:#276749}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>JT/T 808 参数调试工具<small>高新兴瑞联808协议1.0 · 模拟平台</small></h1>
+  <div class="hstat">
+    <span><span class="dot off" id="tcpDot"></span>TCP <b id="tcpPort">-</b></span>
+    <span class="chip">设备 <b id="connCount">0</b> 台</span>
+    <span class="chip">下一个流水号 <b id="seqChip">-</b></span>
+    <label class="chip" style="cursor:pointer;display:flex;align-items:center;gap:5px">
+      <input type="checkbox" id="autoAck" checked style="accent-color:#2b6cb0">自动回 0x8001
+    </label>
+    <span class="chip" title="设备端 TSP 服务器地址填这里">本机 <b id="localIp">-</b></span>
+  </div>
+</header>
+
+<div class="wrap">
+  <!-- ================= 左：操作区 ================= -->
+  <div class="left">
+
+    <!-- 设备标识 -->
+    <div class="card">
+      <h2><span class="tag">HEADER</span>消息头终端手机号<span class="hint">协议 9.1 第 8 条：SIM 卡 IMSI 后 12 位 BCD[6]</span></h2>
+      <div class="body">
+        <div class="ident">
+          <div class="field">
+            <label for="ident">设备 IMSI（15 位）或手机号（12 位）</label>
+            <input id="ident" value="460001234567890" placeholder="15位IMSI 或 12位号码" maxlength="20" autocomplete="off">
+          </div>
+          <div class="field">
+            <label for="connSel">发送到</label>
+            <select id="connSel" style="min-width:150px"><option value="">（无连接）</option></select>
+          </div>
+          <div class="calc" id="identCalc">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 下行指令 -->
+    <div class="card">
+      <h2><span class="tag">TX</span>下行指令</h2>
+      <div class="tabs" id="tabs">
+        <button class="active" data-tab="set">0x8103 设置参数</button>
+        <button data-tab="query">0x8104 / 0x8106 查询</button>
+        <button data-tab="aux">0x8001 / 0x8100 / 0x8107 / 0x8105</button>
+        <button data-tab="raw">原始报文</button>
+      </div>
+
+      <!-- 设置 -->
+      <div class="tabpane active" id="pane-set">
+        <div class="tbl-wrap">
+          <table class="ptable">
+            <thead>
+              <tr>
+                <th class="ck"><input type="checkbox" id="ckAllSet" title="全选/全不选"></th>
+                <th>参数ID</th><th class="pname">名称</th><th class="pval">下发值</th>
+                <th class="prange">范围</th><th>当前值</th>
+              </tr>
+            </thead>
+            <tbody id="setRows"></tbody>
+          </table>
+        </div>
+        <div class="toolbar">
+          <button class="btn primary" id="btnSet">下发 0x8103</button>
+          <button class="btn" id="btnSetQueryFirst">先查当前值</button>
+          <span style="font-size:11px;color:var(--txt3)" id="setCount">已选 0 项</span>
+          <div class="sp">
+            <button class="btn ghost sm" id="btnFillCur">用当前值填充</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- 查询 -->
+      <div class="tabpane" id="pane-query">
+        <div class="body" style="padding-bottom:0">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
+            <button class="btn primary" id="btn8104">下发 0x8104 查询全部</button>
+            <span style="font-size:11px;color:var(--txt3)">0x8104 消息体为空，设备回全部支持的参数</span>
+          </div>
+          <div style="border-top:1px solid var(--line2);padding-top:10px;margin-bottom:8px">
+            <span style="font-size:12px;font-weight:500">0x8106 查询指定参数</span>
+            <span style="font-size:11px;color:var(--txt3);margin-left:8px">勾选后下发，固件上限 8 项</span>
+          </div>
+        </div>
+        <div class="tbl-wrap" style="max-height:300px">
+          <table class="ptable">
+            <thead>
+              <tr><th class="ck"><input type="checkbox" id="ckAllQry"></th><th>参数ID</th><th class="pname">名称</th><th>当前值</th></tr>
+            </thead>
+            <tbody id="qryRows"></tbody>
+          </table>
+        </div>
+        <div class="toolbar">
+          <button class="btn primary" id="btn8106">下发 0x8106</button>
+          <span style="font-size:11px;color:var(--txt3)" id="qryCount">已选 0 项</span>
+        </div>
+      </div>
+
+      <!-- 辅助指令 -->
+      <div class="tabpane" id="pane-aux">
+        <div class="body">
+          <!-- 8001 -->
+          <div style="margin-bottom:16px">
+            <div style="font-size:12px;font-weight:500;margin-bottom:7px">0x8001 平台通用应答</div>
+            <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+              <div class="field"><label>应答流水号</label><input id="ackSeqIn" type="number" value="1" min="0" max="65535"></div>
+              <div class="field"><label>应答消息 ID（十六进制）</label><input id="ackIdIn" value="0100" style="width:110px;font-family:ui-monospace,Consolas,monospace"></div>
+              <div class="field"><label>结果</label>
+                <select id="ackResIn" style="width:150px">
+                  <option value="0">0 成功/确认</option>
+                  <option value="1">1 失败</option>
+                  <option value="2">2 消息有误</option>
+                  <option value="3">3 不支持</option>
+                  <option value="4">4 报警处理确认</option>
+                </select>
+              </div>
+              <button class="btn primary" id="btn8001">下发 0x8001</button>
+            </div>
+          </div>
+
+          <!-- 8100 -->
+          <div style="margin-bottom:16px;border-top:1px solid var(--line2);padding-top:14px">
+            <div style="font-size:12px;font-weight:500;margin-bottom:7px">0x8100 终端注册应答</div>
+            <div style="display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap">
+              <div class="field"><label>应答流水号</label><input id="regSeqIn" type="number" value="1" min="0" max="65535" style="width:96px"></div>
+              <div class="field"><label>结果</label>
+                <select id="regResIn" style="width:180px">
+                  <option value="0">0 成功</option>
+                  <option value="1">1 车辆已被注册</option>
+                  <option value="2">2 数据库中无该车辆</option>
+                  <option value="3">3 终端已被注册</option>
+                  <option value="4">4 数据库中无该终端</option>
+                </select>
+              </div>
+              <div class="field"><label>鉴权码（结果 0 时必填）</label><input id="authCodeIn" value="" style="width:230px;font-family:ui-monospace,Consolas,monospace" placeholder="16~32 位字母数字"></div>
+              <button class="btn primary" id="btn8100">下发 0x8100</button>
+              <button class="btn sm" id="btnGenAuth">随机生成</button>
+            </div>
+          </div>
+
+          <!-- 8107 -->
+          <div style="margin-bottom:16px;border-top:1px solid var(--line2);padding-top:14px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <span style="font-size:12px;font-weight:500">0x8107 查询终端属性</span>
+            <button class="btn primary" id="btn8107">下发 0x8107</button>
+            <span style="font-size:11px;color:var(--txt3)">设备回 0x0107，含制造商/型号/终端ID/ICCID/软硬件版本</span>
+          </div>
+
+          <!-- 8105 -->
+          <div style="border-top:1px solid var(--line2);padding-top:14px">
+            <div style="font-size:12px;font-weight:500;margin-bottom:7px">0x8105 终端控制</div>
+            <div style="display:flex;gap:10px;align-items:flex-start;flex-wrap:wrap">
+              <div class="field"><label>命令字</label>
+                <select id="ctrlCmd" style="width:190px"></select>
+              </div>
+              <div class="field" style="flex:1 1 320px">
+                <label>命令参数（分号分隔，可为空）</label>
+                <input id="ctrlParams" style="width:100%" placeholder="URL;APN;用户名;密码;地址;TCP端口;;制造商ID;硬件版本;固件版本;时限(分钟)">
+              </div>
+              <button class="btn primary" id="btn8105" style="margin-top:15px">下发 0x8105</button>
+            </div>
+            <div style="font-size:11px;color:var(--amber);background:var(--amber-bg);border-radius:4px;padding:5px 8px;margin-top:8px">
+              注意：UDP 端口字段固定留空但必须保留分隔符（两个连续分号），命令参数按 GBK 编码
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 原始报文 -->
+      <div class="tabpane" id="pane-raw">
+        <div class="body">
+          <div style="font-size:11px;color:var(--txt2);margin-bottom:8px">
+            支持两种输入：① 完整帧 <code>7E…7E</code>；② 裸 <code>消息头+消息体</code>（工具自动补校验码与首尾标识位、自动转义）
+          </div>
+          <textarea id="rawHex" style="width:100%;height:110px;padding:8px;border:1px solid var(--line);border-radius:5px;font-family:ui-monospace,Consolas,monospace;font-size:12px;resize:vertical" placeholder="7E8103000B...7E 或 8103000B..."></textarea>
+          <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn primary" id="btnRaw">发送</button>
+            <button class="btn" id="btnRawFillSet">填入当前 0x8103 报文</button>
+            <span id="rawPreview" style="font-size:10.5px;color:var(--txt3);font-family:ui-monospace,Consolas,monospace;word-break:break-all;flex:1 1 100%"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 右：日志 ================= -->
+  <div class="right">
+    <div class="card">
+      <h2>
+        <span class="tag">LOG</span>收发日志
+        <span class="hint">
+          <button class="btn sm" id="btnClearLog">清空</button>
+          <button class="btn sm" id="btnPauseLog">暂停</button>
+        </span>
+      </h2>
+      <div id="logBox"><div class="empty">等待设备连入或在左侧下发指令…</div></div>
+      <div class="toolbar" style="border-top:1px solid var(--line2)">
+        <div class="conn-list" id="connList" style="flex:1"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+/* ========================================================================
+   状态
+   ======================================================================== */
+const S = {
+  params: [],          // 参数表
+  byId: {},            // id -> param
+  current: {},         // 从 0x0104 解析出的当前值： id -> {value, raw}
+  conns: [],
+  selectedConn: "",
+  paused: false,
+  logCount: 0,
+};
+
+/* ========================================================================
+   工具函数
+   ======================================================================== */
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const pidHex = id => '0x' + id.toString(16).toUpperCase().padStart(4, '0');
+
+function toast(msg, kind) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.className = 'show' + (kind ? ' ' + kind : '');
+  clearTimeout(t._tm);
+  t._tm = setTimeout(() => { t.className = ''; }, 2600);
+}
+
+async function apiGet(path) {
+  const r = await fetch(path);
+  return await r.json();
+}
+async function apiPost(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(body || {})
+  });
+  const j = await r.json().catch(() => ({error: '应答解析失败'}));
+  if (!r.ok || j.error) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+/* ========================================================================
+   设备标识计算
+   ======================================================================== */
+function calcIdent() {
+  const raw = $('ident').value.trim();
+  const digits = raw.replace(/\D/g, '');
+  const box = $('identCalc');
+  const inp = $('ident');
+  let tail = '', ok = false, msg = '';
+
+  if (digits.length === 15) {
+    tail = digits.slice(-12); ok = true;
+    msg = '15 位 IMSI → <b>取后 12 位</b>';
+  } else if (digits.length === 12) {
+    tail = digits; ok = true;
+    msg = '12 位号码 → <b>直接使用</b>';
+  } else if (digits.length === 0) {
+    msg = '<span class="err">请输入设备 IMSI</span>';
+  } else {
+    msg = `<span class="err">需 15 位 IMSI 或 12 位号码，当前 ${digits.length} 位数字</span>`;
+  }
+
+  if (ok) {
+    const bcd = [];
+    for (let i = 0; i < 12; i += 2) bcd.push(tail.substr(i, 2));
+    box.innerHTML = `${msg}<br>BCD[6] = <code>${bcd.join(' ').toUpperCase()}</code>`;
+    inp.classList.remove('bad');
+  } else {
+    box.innerHTML = msg;
+    inp.classList.add('bad');
+  }
+  return ok ? tail : null;
+}
+
+/* ========================================================================
+   参数表渲染
+   ======================================================================== */
+function renderTables() {
+  const setBody = $('setRows');
+  const qryBody = $('qryRows');
+  setBody.innerHTML = '';
+  qryBody.innerHTML = '';
+
+  S.params.forEach(p => {
+    const idh = pidHex(p.id);
+    const range = p.type === 'u32'
+      ? `${p.min} ~ ${p.max}${p.unit ? ' ' + p.unit : ''}`
+      : `≤ ${p.maxlen} 字节`;
+    const sup = p.supported
+      ? ''
+      : ' <span class="unsup" title="当前固件 validate 未实现该 ID，下发会整帧被拒">固件未支持</span>';
+
+    // ---- 设置行 ----
+    const tr = document.createElement('tr');
+    if (!p.supported) tr.className = 'unsupported';
+    const inputId = 'set_' + p.id;
+    tr.innerHTML = `
+      <td class="ck"><input type="checkbox" data-pid="${p.id}" class="ckSet" ${p.supported ? '' : 'disabled'}></td>
+      <td class="pid">${idh}</td>
+      <td class="pname">${esc(p.name)}${sup}${p.hint ? `<br><span style="font-size:10px;color:var(--txt3)">${esc(p.hint)}</span>` : ''}</td>
+      <td class="pval"><input id="${inputId}" data-pid="${p.id}" data-type="${p.type}"
+           value="${esc(p.type === 'u32' ? p.default : (p.default || ''))}"
+           ${p.supported ? '' : 'disabled'}></td>
+      <td class="prange">${range}</td>
+      <td><span class="pcur none" id="cur_${p.id}">—</span></td>`;
+    setBody.appendChild(tr);
+
+    // ---- 查询行 ----
+    const tr2 = document.createElement('tr');
+    if (!p.supported) tr2.className = 'unsupported';
+    tr2.innerHTML = `
+      <td class="ck"><input type="checkbox" data-pid="${p.id}" class="ckQry" ${p.supported ? '' : 'disabled'}></td>
+      <td class="pid">${idh}</td>
+      <td class="pname">${esc(p.name)}${sup}</td>
+      <td><span class="pcur none" id="qcur_${p.id}">—</span></td>`;
+    qryBody.appendChild(tr2);
+  });
+
+  // 复选框联动选中数
+  setBody.querySelectorAll('.ckSet').forEach(c => c.addEventListener('change', updateSetCount));
+  qryBody.querySelectorAll('.ckQry').forEach(c => c.addEventListener('change', updateQryCount));
+  updateSetCount(); updateQryCount();
+}
+
+function updateSetCount() {
+  const n = document.querySelectorAll('.ckSet:checked').length;
+  $('setCount').textContent = `已选 ${n} 项`;
+}
+function updateQryCount() {
+  const n = document.querySelectorAll('.ckQry:checked').length;
+  $('qryCount').textContent = `已选 ${n} 项` + (n > 8 ? '（超出固件上限 8 项）' : '');
+}
+
+/* 更新某参数“当前值”展示 */
+function setCurrentValue(pid, value, raw) {
+  S.current[pid] = {value, raw};
+  const el1 = $('cur_' + pid);
+  const el2 = $('qcur_' + pid);
+  const text = value === '' ? '(空)' : value;
+  [el1, el2].forEach(el => {
+    if (!el) return;
+    el.textContent = text;
+    el.className = 'pcur';
+    el.title = `${text}${raw ? '  [HEX ' + raw + ']' : ''}`;
+  });
+}
+
+/* ========================================================================
+   发送
+   ======================================================================== */
+function getCommon() {
+  const phone = calcIdent();
+  if (!phone) throw new Error('设备 IMSI 不正确');
+  return {phone, connId: S.selectedConn ? parseInt(S.selectedConn) : null};
+}
+
+async function sendSet() {
+  const items = [];
+  document.querySelectorAll('.ckSet:checked').forEach(c => {
+    const pid = parseInt(c.dataset.pid);
+    const inp = $('set_' + pid);
+    items.push({id: pid, checked: true, value: inp.value.trim()});
+  });
+  if (!items.length) { toast('请至少勾选一个参数', 'err'); return; }
+  const common = getCommon();
+  await apiPost('/api/send', {action: '8103', items, ...common});
+  toast(`0x8103 已下发（${items.length} 项）`, 'ok');
+}
+
+async function sendQueryAll() {
+  const common = getCommon();
+  await apiPost('/api/send', {action: '8104', ...common});
+  toast('0x8104 已下发', 'ok');
+}
+
+async function sendQuerySome() {
+  const ids = [];
+  document.querySelectorAll('.ckQry:checked').forEach(c => ids.push(parseInt(c.dataset.pid)));
+  if (!ids.length) { toast('请至少勾选一个参数', 'err'); return; }
+  const common = getCommon();
+  await apiPost('/api/send', {action: '8106', ids, ...common});
+  toast(`0x8106 已下发（${ids.length} 项）`, 'ok');
+}
+
+async function send8001() {
+  const common = getCommon();
+  await apiPost('/api/send', {
+    action: '8001', ...common,
+    ackSeq: parseInt($('ackSeqIn').value) || 0,
+    ackMsgId: parseInt($('ackIdIn').value.trim(), 16) || 0,
+    result: parseInt($('ackResIn').value),
+  });
+  toast('0x8001 已下发', 'ok');
+}
+
+async function send8100() {
+  const res = parseInt($('regResIn').value);
+  const code = $('authCodeIn').value.trim();
+  if (res === 0 && !code) { toast('结果 0 时必须填鉴权码', 'err'); return; }
+  const common = getCommon();
+  await apiPost('/api/send', {
+    action: '8100', ...common,
+    ackSeq: parseInt($('regSeqIn').value) || 0,
+    result: res, authCode: code,
+  });
+  toast('0x8100 已下发', 'ok');
+}
+
+async function send8107() {
+  const common = getCommon();
+  await apiPost('/api/send', {action: '8107', ...common});
+  toast('0x8107 已下发', 'ok');
+}
+
+async function send8105() {
+  const common = getCommon();
+  await apiPost('/api/send', {
+    action: '8105', ...common,
+    cmdWord: parseInt($('ctrlCmd').value),
+    params: $('ctrlParams').value,
+  });
+  toast('0x8105 已下发', 'ok');
+}
+
+async function sendRaw() {
+  const hex = $('rawHex').value.trim();
+  if (!hex) { toast('请输入报文', 'err'); return; }
+  const common = getCommon();
+  await apiPost('/api/send', {action: 'raw', hex, ...common});
+  toast('原始报文已发送', 'ok');
+}
+
+/* ========================================================================
+   日志
+   ======================================================================== */
+function addLog(evt) {
+  if (S.paused) return;
+  const box = $('logBox');
+  const empty = box.querySelector('.empty');
+  if (empty) empty.remove();
+
+  const d = evt.data || {};
+  const div = document.createElement('div');
+  div.className = 'logline';
+
+  let dirCls = d.dir || 'INFO';
+  if (dirCls === 'RX' && d.checksumOk === false) dirCls = 'ERR';
+
+  let head = '';
+  if (d.dir === 'INFO') {
+    head = `<span class="sum">${esc(d.text || '')}</span>`;
+  } else {
+    const parts = [];
+    if (d.msgId !== undefined) parts.push(`<b>${d.msgName}</b> <span style="color:var(--txt3)">0x${d.msgId.toString(16).toUpperCase().padStart(4,'0')}</span>`);
+    else parts.push(`<b>${esc(d.msgName || '')}</b>`);
+    if (d.seq !== undefined) parts.push(`流水号 <b>${d.seq}</b>`);
+    if (d.phone) parts.push(`手机号 <b>${esc(d.phone)}</b>`);
+    if (d.bodyLen !== undefined) parts.push(`体长 ${d.bodyLen}`);
+    if (d.note) parts.push(`<span style="color:var(--txt2)">${esc(d.note)}</span>`);
+    head = `<span class="sum">${parts.join(' · ')}</span>`;
+    if (d.error) head += `<div class="errmsg">⚠ ${esc(d.error)}</div>`;
+    (d.notes || []).forEach(n => head += `<div class="note">· ${esc(n)}</div>`);
+
+    // 0x0104 / 0x8103 参数列表
+    if (d.parsed && d.parsed.items && d.parsed.items.length) {
+      const g = document.createElement('div');
+      g.className = 'pval-grid';
+      d.parsed.items.forEach(it => {
+        g.innerHTML += `<span class="pval-item"><b>${pidHex(it.id)}</b> ${esc(it.name)} = <span>${esc(it.value)}</span></span>`;
+      });
+      head += g.outerHTML;
+      if (d.msgId === 0x0104) {
+        d.parsed.items.forEach(it => setCurrentValue(it.id, it.value, it.raw));
+      }
+    }
+    // 其它解析结果
+    if (d.parsed && Object.keys(d.parsed).length && !(d.parsed.items)) {
+      head += `<details><summary>解析字段</summary><pre>${esc(JSON.stringify(d.parsed, null, 2))}</pre></details>`;
+    }
+    if (d.bodyHex) {
+      head += `<details><summary>原始字节</summary><pre>消息体: ${esc(d.bodyHex)}\n完整帧: ${esc(d.rawHex || '')}</pre></details>`;
+    }
+  }
+
+  div.innerHTML = `<span class="t">${esc(d.ts || '')}</span>
+    <span class="d ${dirCls}">${dirCls}</span>
+    <span class="c">${head}${d.conn ? `<div class="hex">${esc(d.conn)}</div>` : ''}</span>`;
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  S.logCount++;
+
+  // 只保留最近 600 条，防内存膨胀
+  while (box.children.length > 600) box.removeChild(box.firstChild);
+}
+
+/* ========================================================================
+   连接列表
+   ======================================================================== */
+function renderConns(list) {
+  S.conns = list || [];
+  const sel = $('connSel');
+  const prev = sel.value;
+  sel.innerHTML = '';
+  if (!S.conns.length) {
+    sel.innerHTML = '<option value="">（无连接）</option>';
+    S.selectedConn = '';
+  } else {
+    S.conns.forEach(c => {
+      const o = document.createElement('option');
+      o.value = c.id;
+      o.textContent = `#${c.id} ${c.phone || c.desc}`;
+      sel.appendChild(o);
+    });
+    if (prev && S.conns.some(c => String(c.id) === prev)) sel.value = prev;
+    S.selectedConn = sel.value;
+  }
+  $('connCount').textContent = S.conns.length;
+
+  const box = $('connList');
+  if (!S.conns.length) {
+    box.innerHTML = '<div style="font-size:11.5px;color:var(--txt3);text-align:center;padding:4px 0">暂无设备连接</div>';
+    return;
+  }
+  box.innerHTML = S.conns.map(c => `
+    <div class="conn-item ${c.alive ? 'on' : ''}">
+      <span class="dot ${c.alive ? 'on' : 'off'}"></span>
+      <span class="cid">#${c.id}</span>
+      <span class="cphone">${esc(c.phone || '未知号码')}</span>
+      <span class="cmeta">${esc(c.desc)} · RX ${c.rx} / TX ${c.tx}</span>
+      <button class="btn sm danger" onclick="kickConn(${c.id})">断开</button>
+    </div>`).join('');
+}
+
+async function kickConn(id) {
+  if (!confirm(`断开连接 #${id}？`)) return;
+  await apiPost('/api/disconnect', {id});
+}
+
+/* ========================================================================
+   初始化
+   ======================================================================== */
+async function init() {
+  // 参数表
+  const meta = await apiGet('/api/params');
+  S.params = meta.params;
+  S.params.forEach(p => S.byId[p.id] = p);
+  renderTables();
+
+  // 0x8105 命令字
+  $('ctrlCmd').innerHTML = meta.controlCmds.map(c =>
+    `<option value="${c.v}">0x${c.v.toString(16).toUpperCase().padStart(2,'0')} ${esc(c.name)}</option>`).join('');
+
+  // 状态
+  const st = await apiGet('/api/status');
+  $('tcpPort').textContent = st.tcpPort;
+  $('tcpDot').className = 'dot on';
+  $('localIp').textContent = (st.localIps[0] || '127.0.0.1') + ':' + st.tcpPort;
+  $('localIp').parentElement.title = '设备端 TSP 服务器地址填这些：\n' +
+    (st.localIps.length ? st.localIps.join('\n') : '（未检测到局域网 IP）') + '\n端口 ' + st.tcpPort;
+  $('autoAck').checked = st.autoAck;
+  renderConns(st.conns);
+  calcIdent();
+
+  // SSE
+  connectSSE();
+  setInterval(refreshStatus, 4000);
+
+  bindEvents();
+}
+
+function connectSSE() {
+  const es = new EventSource('/api/events');
+  es.onmessage = e => {
+    try {
+      const evt = JSON.parse(e.data);
+      if (evt.type === 'log') addLog(evt);
+      else if (evt.type === 'conns') renderConns(evt.data);
+    } catch (err) { /* 忽略坏包 */ }
+  };
+  es.onerror = () => {
+    setTimeout(connectSSE, 2000);
+  };
+}
+
+async function refreshStatus() {
+  try {
+    const st = await apiGet('/api/status');
+    renderConns(st.conns);
+    $('seqChip').textContent = st.nextSeq;
+  } catch (e) { /* ignore */ }
+}
+
+function bindEvents() {
+  // tab
+  document.querySelectorAll('#tabs button').forEach(b => {
+    b.onclick = () => {
+      document.querySelectorAll('#tabs button').forEach(x => x.classList.remove('active'));
+      document.querySelectorAll('.tabpane').forEach(x => x.classList.remove('active'));
+      b.classList.add('active');
+      $('pane-' + b.dataset.tab).classList.add('active');
+    };
+  });
+
+  // 全选
+  $('ckAllSet').onchange = e => {
+    document.querySelectorAll('.ckSet:not(:disabled)').forEach(c => c.checked = e.target.checked);
+    updateSetCount();
+  };
+  $('ckAllQry').onchange = e => {
+    document.querySelectorAll('.ckQry:not(:disabled)').forEach(c => c.checked = e.target.checked);
+    updateQryCount();
+  };
+
+  // 发送
+  $('btnSet').onclick = () => sendSet().catch(e => toast(e.message, 'err'));
+  $('btn8104').onclick = () => sendQueryAll().catch(e => toast(e.message, 'err'));
+  $('btn8106').onclick = () => sendQuerySome().catch(e => toast(e.message, 'err'));
+  $('btn8001').onclick = () => send8001().catch(e => toast(e.message, 'err'));
+  $('btn8100').onclick = () => send8100().catch(e => toast(e.message, 'err'));
+  $('btn8107').onclick = () => send8107().catch(e => toast(e.message, 'err'));
+  $('btn8105').onclick = () => send8105().catch(e => toast(e.message, 'err'));
+  $('btnRaw').onclick = () => sendRaw().catch(e => toast(e.message, 'err'));
+
+  // 先查当前值
+  $('btnSetQueryFirst').onclick = async () => {
+    try {
+      const ids = [];
+      document.querySelectorAll('.ckSet:checked').forEach(c => ids.push(parseInt(c.dataset.pid)));
+      const common = getCommon();
+      if (ids.length && ids.length <= 8) {
+        await apiPost('/api/send', {action: '8106', ids, ...common});
+      } else {
+        await apiPost('/api/send', {action: '8104', ...common});
+      }
+      toast('已下发查询，等设备回 0x0104 后“当前值”列会更新', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+
+  // 用当前值填充
+  $('btnFillCur').onclick = () => {
+    let n = 0;
+    Object.keys(S.current).forEach(k => {
+      const pid = parseInt(k);
+      const inp = $('set_' + pid);
+      if (inp && !inp.disabled && S.current[k].value !== undefined) {
+        inp.value = S.current[k].value;
+        n++;
+      }
+    });
+    toast(n ? `已填充 ${n} 项当前值` : '还没有收到 0x0104，先查一次', n ? 'ok' : 'err');
+  };
+
+  // 随机鉴权码
+  $('btnGenAuth').onclick = () => {
+    const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+    let s = '';
+    const buf = new Uint8Array(24);
+    crypto.getRandomValues(buf);
+    for (let i = 0; i < 24; i++) s += chars[buf[i] % chars.length];
+    $('authCodeIn').value = s;
+  };
+
+  // 原始报文 -> 填入当前 8103
+  $('btnRawFillSet').onclick = async () => {
+    try {
+      const items = [];
+      document.querySelectorAll('.ckSet:checked').forEach(c => {
+        const pid = parseInt(c.dataset.pid);
+        items.push({id: pid, checked: true, value: $('set_' + pid).value.trim()});
+      });
+      if (!items.length) { toast('先在设置页勾选参数', 'err'); return; }
+      const phone = calcIdent();
+      if (!phone) { toast('设备 IMSI 不正确', 'err'); return; }
+      const r = await apiPost('/api/preview', {action: '8103', items, phone});
+      $('rawHex').value = r.hex;
+      $('rawPreview').textContent = '已生成，长度 ' + r.hex.replace(/ /g, '').length / 2 + ' 字节';
+      toast('已填入，可直接发送或复制', 'ok');
+    } catch (e) { toast(e.message, 'err'); }
+  };
+
+  // 原始报文预览
+  let tm = null;
+  $('rawHex').oninput = () => {
+    clearTimeout(tm);
+    tm = setTimeout(() => {
+      const h = $('rawHex').value.replace(/[^0-9a-fA-F]/g, '');
+      $('rawPreview').textContent = h ? `${h.length / 2} 字节` : '';
+    }, 200);
+  };
+
+  // 日志控制
+  $('btnClearLog').onclick = () => {
+    $('logBox').innerHTML = '<div class="empty">日志已清空</div>';
+  };
+  $('btnPauseLog').onclick = e => {
+    S.paused = !S.paused;
+    e.target.textContent = S.paused ? '继续' : '暂停';
+    e.target.classList.toggle('primary', S.paused);
+  };
+
+  // 连接选择
+  $('connSel').onchange = () => { S.selectedConn = $('connSel').value; };
+
+  // 自动应答
+  $('autoAck').onchange = async e => {
+    await apiPost('/api/autoack', {enabled: e.target.checked});
+    toast('自动回 0x8001：' + (e.target.checked ? '开' : '关'), 'ok');
+  };
+
+  // 设备标识
+  $('ident').oninput = calcIdent;
+}
+
+init().catch(e => toast('初始化失败：' + e.message, 'err'));
+</script>
+</body>
+</html>

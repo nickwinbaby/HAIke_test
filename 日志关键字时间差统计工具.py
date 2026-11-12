@@ -20,9 +20,18 @@ except ImportError as exc:  # pragma: no cover - only used on machines missing t
     ) from exc
 
 
-APP_TITLE = "ZB_TOPIC关键字时间差统计工具"
+APP_TITLE = "日志关键字时间差统计工具"
 TIMESTAMP_RE = re.compile(
     r"^\s*(?P<timestamp>\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?)"
+)
+FIRST_BRACKET_RE = re.compile(r"\[(?P<content>[^\]\r\n]*)\]")
+TIMESTAMP_VALUE_RE = re.compile(
+    r"^\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?$"
+)
+ANYWHERE_TIMESTAMP_RE = re.compile(
+    r"(?<!\d)(?P<timestamp>"
+    r"\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}(?:[.,]\d{1,6})?"
+    r")(?![.,]?\d)"
 )
 ILLEGAL_EXCEL_CHARS_RE = re.compile(r"[\x00-\x08\x0B\x0C\x0E-\x1F]")
 AUTO_ENCODINGS = ("utf-8-sig", "utf-8", "gb18030", "gbk")
@@ -81,12 +90,25 @@ def parse_keywords(keyword_text: str) -> list[str]:
 
 
 def parse_timestamp(line: str) -> datetime | None:
-    """提取行首时间，支持秒以及最多 6 位小数秒。"""
+    """按行首、第一个 []、整行搜索的顺序提取时间。"""
     match = TIMESTAMP_RE.match(line)
-    if not match:
-        return None
+    if match:
+        timestamp_text = match.group("timestamp")
+    else:
+        bracket_match = FIRST_BRACKET_RE.search(line)
+        bracket_content = bracket_match.group("content").strip() if bracket_match else ""
+        if TIMESTAMP_VALUE_RE.fullmatch(bracket_content):
+            timestamp_text = bracket_content
+        else:
+            anywhere_match = ANYWHERE_TIMESTAMP_RE.search(line)
+            if not anywhere_match:
+                return None
+            timestamp_text = anywhere_match.group("timestamp")
 
-    timestamp_text = match.group("timestamp").replace("T", " ").replace(",", ".")
+    timestamp_text = timestamp_text.replace("T", " ").replace(",", ".")
+    if "." in timestamp_text:
+        timestamp_base, fractional_seconds = timestamp_text.rsplit(".", 1)
+        timestamp_text = f"{timestamp_base}.{fractional_seconds.ljust(6, '0')}"
     try:
         return datetime.fromisoformat(timestamp_text)
     except ValueError:
@@ -192,6 +214,17 @@ def sanitize_excel_text(text: str) -> tuple[str, bool]:
     return text[:32764] + "...", True
 
 
+def convert_delta_units(
+    delta_seconds: float | None,
+) -> tuple[float | None, float | None, float | None]:
+    """秒始终保留；达到 60 秒时显示分钟，达到 3600 秒时显示小时。"""
+    if delta_seconds is None:
+        return None, None, None
+    delta_minutes = delta_seconds / 60 if delta_seconds >= 60 else None
+    delta_hours = delta_seconds / 3600 if delta_seconds >= 3600 else None
+    return delta_seconds, delta_minutes, delta_hours
+
+
 def export_to_excel(
     result: AnalysisResult,
     output_path: str | Path,
@@ -202,7 +235,12 @@ def export_to_excel(
         destination = destination.with_suffix(".xlsx")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    headers = ("包含关键字的完整行", "与上一条记录时间差（秒）")
+    headers = (
+        "包含关键字的完整行",
+        "时间差（秒）",
+        "时间差（分）",
+        "时间差（时）",
+    )
     header_fill = PatternFill("solid", fgColor="1F4E78")
     header_font = Font(name="微软雅黑", size=11, bold=True, color="FFFFFF")
     body_font = Font(name="微软雅黑", size=10, color="222222")
@@ -229,20 +267,25 @@ def export_to_excel(
         for record in keyword_result.records:
             safe_line, was_truncated = sanitize_excel_text(record.full_line)
             truncated_count += int(was_truncated)
-            sheet.append((safe_line, record.delta_seconds))
+            delta_seconds, delta_minutes, delta_hours = convert_delta_units(
+                record.delta_seconds
+            )
+            sheet.append((safe_line, delta_seconds, delta_minutes, delta_hours))
 
-        for row in sheet.iter_rows(min_row=2, max_col=2):
+        for row in sheet.iter_rows(min_row=2, max_col=4):
             row[0].font = body_font
             row[0].alignment = Alignment(
                 horizontal="left", vertical="center", wrap_text=False
             )
-            row[1].font = body_font
-            row[1].alignment = Alignment(horizontal="right", vertical="center")
-            row[1].number_format = "0.######"
+            for cell in row[1:]:
+                cell.font = body_font
+                cell.alignment = Alignment(horizontal="right", vertical="center")
+                cell.number_format = "0.######"
 
-        sheet.auto_filter.ref = f"A1:B{max(sheet.max_row, 1)}"
+        sheet.auto_filter.ref = f"A1:D{max(sheet.max_row, 1)}"
         sheet.column_dimensions[get_column_letter(1)].width = 105
-        sheet.column_dimensions[get_column_letter(2)].width = 25
+        for column_index in range(2, 5):
+            sheet.column_dimensions[get_column_letter(column_index)].width = 29
         exported_keyword_results.append(
             KeywordResult(
                 keyword=keyword_result.keyword,
@@ -252,7 +295,7 @@ def export_to_excel(
             )
         )
 
-    workbook.properties.title = "ZB_TOPIC关键字时间差统计"
+    workbook.properties.title = APP_TITLE
     workbook.properties.subject = f"关键字数量：{len(result.keyword_results)}"
     sheet_mapping_description = (
         f"来源文件：{Path(source_path).name}；"
@@ -287,8 +330,8 @@ class TimeDifferenceApp:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title(APP_TITLE)
-        self.root.geometry("940x710")
-        self.root.minsize(820, 600)
+        self.root.geometry("1160x710")
+        self.root.minsize(940, 600)
 
         self.source_var = tk.StringVar()
         self.output_var = tk.StringVar()
@@ -321,14 +364,6 @@ class TimeDifferenceApp:
         container.pack(fill="both", expand=True)
         container.columnconfigure(1, weight=1)
         container.rowconfigure(5, weight=1)
-
-        title = ttk.Label(
-            container,
-            text="ZB_TOPIC关键字时间差统计",
-            font=("Microsoft YaHei UI", 17, "bold"),
-            foreground="#1F4E78",
-        )
-        title.grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 14))
 
         ttk.Label(container, text="TXT文件：").grid(row=1, column=0, sticky="e", pady=5)
         self.source_entry = ttk.Entry(container, textvariable=self.source_var)
@@ -410,14 +445,18 @@ class TimeDifferenceApp:
 
         self.tree = ttk.Treeview(
             preview_frame,
-            columns=("line", "delta"),
+            columns=("line", "seconds", "minutes", "hours"),
             show="headings",
             selectmode="browse",
         )
         self.tree.heading("line", text="包含关键字的完整行")
-        self.tree.heading("delta", text="与上一条记录时间差（秒）")
-        self.tree.column("line", width=680, minwidth=350, anchor="w")
-        self.tree.column("delta", width=185, minwidth=160, anchor="e", stretch=False)
+        self.tree.heading("seconds", text="时间差（秒）")
+        self.tree.heading("minutes", text="时间差（分）")
+        self.tree.heading("hours", text="时间差（时）")
+        self.tree.column("line", width=590, minwidth=350, anchor="w")
+        self.tree.column("seconds", width=160, minwidth=135, anchor="e", stretch=False)
+        self.tree.column("minutes", width=160, minwidth=135, anchor="e", stretch=False)
+        self.tree.column("hours", width=160, minwidth=135, anchor="e", stretch=False)
 
         vertical_scrollbar = ttk.Scrollbar(
             preview_frame, orient="vertical", command=self.tree.yview
@@ -456,7 +495,9 @@ class TimeDifferenceApp:
             return
         self.source_var.set(selected)
         source_path = Path(selected)
-        self.output_var.set(str(source_path.with_name(f"{source_path.stem}_多关键字时间差.xlsx")))
+        self.output_var.set(
+            str(source_path.with_name(f"{source_path.stem}_日志关键字时间差统计.xlsx"))
+        )
 
     def _select_output(self) -> None:
         initial_path = Path(self.output_var.get()) if self.output_var.get().strip() else None
@@ -465,7 +506,11 @@ class TimeDifferenceApp:
             defaultextension=".xlsx",
             filetypes=(("Excel工作簿", "*.xlsx"),),
             initialdir=str(initial_path.parent) if initial_path else None,
-            initialfile=initial_path.name if initial_path else "多关键字时间差.xlsx",
+            initialfile=(
+                initial_path.name
+                if initial_path
+                else "日志关键字时间差统计.xlsx"
+            ),
         )
         if selected:
             self.output_var.set(selected)
@@ -487,7 +532,9 @@ class TimeDifferenceApp:
             return
         if not output:
             source_path = Path(source)
-            output = str(source_path.with_name(f"{source_path.stem}_多关键字时间差.xlsx"))
+            output = str(
+                source_path.with_name(f"{source_path.stem}_日志关键字时间差统计.xlsx")
+            )
             self.output_var.set(output)
 
         if Path(output).suffix.lower() != ".xlsx":
@@ -584,8 +631,11 @@ class TimeDifferenceApp:
     def _show_keyword_result(self, result: KeywordResult) -> None:
         self._clear_tree()
         for record in result.records[:PREVIEW_LIMIT]:
-            delta_text = "" if record.delta_seconds is None else f"{record.delta_seconds:g}"
-            self.tree.insert("", "end", values=(record.full_line, delta_text))
+            delta_values = convert_delta_units(record.delta_seconds)
+            display_values = tuple(
+                "" if value is None else f"{value:g}" for value in delta_values
+            )
+            self.tree.insert("", "end", values=(record.full_line, *display_values))
 
     def _on_preview_sheet_changed(self, _event: object = None) -> None:
         selected = self.preview_sheet_var.get()

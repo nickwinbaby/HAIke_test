@@ -1,0 +1,2803 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>JT/T 808 报文生成与反解V1.2</title>
+<link rel="stylesheet" href="./vendor/leaflet.css">
+<style>
+:root{
+  --bg:#f4f6f9; --panel:#ffffff; --line:#e4e8ef; --line2:#eef1f6;
+  --txt:#1f2430; --txt2:#6b7383; --txt3:#98a1b0;
+  --blue:#2563eb; --blue-bg:#eff5ff;
+  --green:#16a34a; --green-bg:#eefaf1;
+  --red:#dc2626; --red-bg:#fef2f2;
+  --amber:#d97706; --amber-bg:#fffbeb;
+  --gray:#5f6773; --gray-bg:#eef0f3;
+  --nav:#1b2333; --nav2:#242e42;
+  --mono: ui-monospace, "Consolas", "Courier New", monospace;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  background:var(--bg); color:var(--txt);
+  font:13px/1.6 -apple-system, "Segoe UI", "Microsoft YaHei", sans-serif;
+}
+button{font-family:inherit;cursor:pointer}
+input,select,textarea{font-family:inherit;font-size:13px;color:var(--txt)}
+
+header{
+  height:54px;display:flex;align-items:center;gap:10px;padding:0 14px;
+  background:var(--nav);color:#c8d0de;user-select:none;
+  position:sticky;top:0;z-index:900;
+}
+.tb-brand{
+  display:flex;align-items:center;gap:9px;padding-right:15px;
+  border-right:1px solid rgba(255,255,255,.1);flex:0 0 auto;
+}
+.tb-brand h1{color:#fff;font-size:13.5px;letter-spacing:.2px;font-weight:600;display:block;line-height:1.25;margin:0}
+.tb-brand small{display:block;color:#7c8798;font-size:10px;line-height:1.2;font-weight:400}
+.tb-nav{display:flex;align-items:center;gap:3px;flex:0 1 auto;min-width:0;overflow-x:auto;scrollbar-width:none}
+.tb-nav::-webkit-scrollbar{display:none}
+.tb-nav a{
+  display:flex;align-items:center;gap:7px;height:33px;padding:0 12px;border-radius:7px;
+  color:#c8d0de;text-decoration:none;font-size:13px;cursor:pointer;white-space:nowrap;flex:0 0 auto;
+}
+.tb-nav a:hover{background:var(--nav2);color:#fff}
+.tb-nav a.on{background:var(--blue);color:#fff;font-weight:600}
+.tb-sp{flex:1;min-width:8px}
+.tb-right{display:flex;align-items:center;gap:8px;flex:0 0 auto}
+.tb-right .ver{
+  font-size:11.5px;color:#93a0b4;background:rgba(255,255,255,.06);
+  border:1px solid rgba(255,255,255,.1);border-radius:6px;padding:4px 9px;
+  font-family:var(--mono);
+}
+.tb-right .cpy{font-size:11px;color:#7c8798}
+.tb-right .cpy b{color:#c8d0de;font-weight:500}
+
+.wrap{display:flex;gap:14px;padding:14px 18px 40px;align-items:flex-start;max-width:1660px;margin:0 auto}
+/* 运行方式提示条：只有「不是桌面版」时才显示 */
+.runbar{max-width:1660px;margin:12px auto 0;padding:9px 14px;border-radius:7px;font-size:12px;line-height:1.75;
+  border:1px solid #e3cf9b;background:#fdf6e3;color:#6b4c0e}
+.runbar b{color:#8f4a05}
+.runbar code{font-family:var(--mono);background:#fff;border:1px solid #e8d7a8;border-radius:3px;padding:0 4px;color:#6b4c0e}
+.runbar .x{margin-left:auto;color:#a58a4a;cursor:pointer;font-size:11px;white-space:nowrap}
+.colL{flex:1 1 620px;min-width:0;display:flex;flex-direction:column;gap:13px}
+.colR{flex:1 1 500px;min-width:0;display:flex;flex-direction:column;gap:13px;position:sticky;top:66px}
+@media(max-width:1150px){
+  .wrap{flex-direction:column}
+  .colL,.colR{width:100%}
+  .colR{position:static}
+}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden}
+.card>h2{
+  margin:0;padding:9px 14px;font-size:12.5px;font-weight:600;
+  border-bottom:1px solid var(--line2);background:#fafbfc;
+  display:flex;align-items:center;gap:9px;
+}
+.card>h2 .no{
+  font-size:10px;font-weight:700;color:#fff;background:var(--blue);
+  width:16px;height:16px;border-radius:50%;display:inline-flex;
+  align-items:center;justify-content:center;flex:0 0 auto;
+}
+.card>h2 .hint{margin-left:auto;font-weight:400;font-size:11px;color:var(--txt3)}
+.card .body{padding:12px 14px}
+
+/* ---------- 表单 ---------- */
+.row{display:flex;gap:12px;align-items:flex-end;flex-wrap:wrap}
+.fld{display:flex;flex-direction:column;gap:4px}
+.fld label{font-size:11px;color:var(--txt2);font-weight:500}
+.fld input,.fld select{
+  height:31px;padding:0 9px;border:1px solid var(--line);border-radius:5px;
+  background:#fff;outline:none;transition:.14s;
+}
+.fld input:focus,.fld select:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
+.fld input.bad{border-color:var(--red);box-shadow:0 0 0 3px var(--red-bg)}
+#ident{width:230px;font-family:var(--mono);letter-spacing:.5px}
+#seq{width:100px;font-family:var(--mono)}
+#seq.auto{background:#f6f8fa;color:var(--txt3)}
+
+.bcd{
+  flex:1 1 260px;min-width:220px;
+  background:#fafbfc;border:1px solid var(--line2);border-radius:6px;
+  padding:6px 10px;font-size:11.5px;color:var(--txt2);line-height:1.9;
+}
+.bcd code{font-family:var(--mono);color:var(--blue);font-weight:600;font-size:11.5px}
+.bcd .err{color:var(--red);font-weight:500}
+
+/* ---------- 按钮 ---------- */
+.btn{
+  height:31px;padding:0 13px;border-radius:5px;border:1px solid var(--line);
+  background:#fff;color:var(--txt);font-size:12px;transition:.14s;
+  display:inline-flex;align-items:center;justify-content:center;gap:5px;white-space:nowrap;
+}
+.btn:hover{border-color:#b9bfc9;background:#fafbfc}
+.btn:active{transform:translateY(.5px)}
+.btn.pri{background:var(--blue);border-color:var(--blue);color:#fff;font-weight:500}
+.btn.pri:hover{background:#1a4f8c;border-color:#1a4f8c}
+.btn.sm{height:24px;padding:0 9px;font-size:11px;border-radius:4px}
+.btn.ghost{background:transparent}
+
+.seg{display:flex;flex-wrap:wrap;gap:7px}
+.seg button{
+  flex:1 1 auto;min-width:118px;height:40px;padding:0 12px;font-size:12px;
+  border:1px solid var(--line);background:#fff;border-radius:6px;color:var(--txt2);
+  transition:.14s;text-align:left;line-height:1.3;
+}
+.seg button:hover{border-color:#b9bfc9;background:#fafbfc}
+.seg button.on{
+  border-color:var(--blue);background:var(--blue-bg);color:var(--blue);font-weight:600;
+  box-shadow:0 0 0 1px var(--blue) inset;
+}
+.seg button b{display:block;font-family:var(--mono);font-size:10.5px;font-weight:600;opacity:.75;letter-spacing:.3px}
+
+/* ---------- 电子围栏 ---------- */
+.segbrk{
+  flex:1 1 100%;margin-top:4px;padding-top:10px;border-top:1px dashed var(--line);
+  font-size:11px;color:var(--txt3);letter-spacing:.2px;
+}
+.segbrk span{font-weight:600}
+.fprops{
+  display:flex;flex-wrap:wrap;gap:14px;align-items:center;
+  padding:9px 11px;background:#fafbfc;border:1px solid var(--line);
+  border-radius:6px;margin-bottom:11px;font-size:11.5px;color:var(--txt2);
+}
+.fprops .pt{font-weight:600;color:var(--txt)}
+.fprops label{display:flex;align-items:center;gap:5px;cursor:pointer}
+.fprops .pv{margin-left:auto;font-family:var(--mono);color:var(--blue)}
+.fprops .pv b{font-size:12px}
+.note{font-size:11px;color:var(--txt3);line-height:1.5}
+/* 围栏时间实时回显：成功=蓝，非法=红，均写死深色，不依赖主题 */
+.tv{display:block;margin-top:4px;font-size:10.5px;line-height:1.45;font-family:var(--mono);color:#5F5E5A}
+.tv.ok{color:#0C447C}
+.tv.bad{color:#A32D2D}
+/* 围栏时间：点框弹系统日历，右侧按钮一键清空（报文里就是 12 个 0） */
+.tbox{display:flex;align-items:center;gap:6px}
+.tbox input[type="datetime-local"]{height:28px;padding:0 7px;border:1px solid var(--line);border-radius:5px;font-family:var(--mono);font-size:11.5px;color:var(--txt);background:#fff}
+.tbox input[type="datetime-local"]:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 2px rgba(31,95,160,.12)}
+/* 矩形 / 多边形两种填法：小号分段按钮，只显示当前方式的输入框 */
+.modeseg{display:inline-flex;border:1px solid var(--line);border-radius:6px;overflow:hidden;margin-bottom:10px}
+.modeseg button{
+  height:28px;padding:0 13px;font-size:11.5px;border:none;border-right:1px solid var(--line);
+  background:#fff;color:var(--txt2);cursor:pointer;transition:.14s;
+}
+.modeseg button:last-child{border-right:none}
+.modeseg button:hover{background:#fafbfc}
+.modeseg button.on{background:var(--blue-bg);color:var(--blue);font-weight:600}
+
+/* ---------- 围栏：绘图入口 ---------- */
+.frow{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:11px;
+  padding:9px 11px;background:var(--blue-bg);border:1px solid #d5e3fb;border-radius:6px}
+.frow .note{color:#0C447C;font-weight:500}
+
+/* ---------- 围栏弹窗（二选一 / 地图） ---------- */
+.fdlg{position:fixed;inset:0;z-index:110;display:none;align-items:center;justify-content:center;padding:20px}
+.fdlg.show{display:flex}
+.fmask{position:absolute;inset:0;background:rgba(20,26,34,.45)}
+.fbox{
+  position:relative;background:#fff;border-radius:10px;overflow:hidden;
+  box-shadow:0 14px 44px rgba(20,26,34,.28);display:flex;flex-direction:column;
+  width:100%;max-width:520px;max-height:94vh;
+}
+.fbox.lg{max-width:1080px;height:88vh}
+.fhd{
+  flex:0 0 46px;display:flex;align-items:center;gap:10px;padding:0 15px;
+  border-bottom:1px solid var(--line);font-size:14px;color:var(--txt);
+}
+.fhd b{font-weight:600}
+.fhd .fhint{font-size:11.5px;font-weight:400;color:var(--txt3);flex:1;min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fhd .fx{margin-left:auto;cursor:pointer;color:var(--txt3);font-size:16px;line-height:1}
+.fhd .fx:hover{color:var(--red)}
+.fbd{padding:16px 17px 18px;overflow:auto}
+.modepick{display:flex;gap:12px;flex-wrap:wrap}
+.mcard{
+  flex:1 1 210px;text-align:left;padding:14px 15px;border:1px solid var(--line);
+  border-radius:8px;background:#fff;cursor:pointer;transition:.14s;
+}
+.mcard:hover{border-color:var(--blue);background:var(--blue-bg)}
+.mcard b{display:block;font-size:13.5px;color:var(--blue);margin-bottom:6px}
+.mcard span{display:block;font-size:11.5px;line-height:1.7;color:var(--txt2)}
+
+.mapbar{
+  flex:0 0 auto;display:flex;align-items:center;gap:7px;flex-wrap:wrap;
+  padding:8px 11px;border-bottom:1px solid var(--line);background:#fafbfc;
+}
+.mapbar button{
+  height:28px;padding:0 10px;font-size:11.5px;border:1px solid var(--line);
+  border-radius:5px;background:#fff;color:var(--txt2);cursor:pointer;
+}
+.mapbar button:hover{border-color:#b9c6dd;color:var(--blue)}
+.mapbar button.on{background:var(--blue-bg);border-color:var(--blue);color:var(--blue);font-weight:600}
+.mapbar .sp{flex:1}
+.srch{position:relative;display:flex;align-items:center;width:236px}
+.srch .mg{position:absolute;left:8px;color:var(--txt3);font-size:14px;pointer-events:none}
+.srch input{
+  width:100%;height:28px;padding:0 26px 0 25px;border:1px solid var(--line);
+  border-radius:5px;background:#fff;font-size:11.5px;outline:none;
+}
+.srch input:focus{border-color:var(--blue)}
+.srch .clr{position:absolute;right:3px;width:20px;height:24px;border:none;background:transparent;
+  color:var(--txt3);font-size:12px;cursor:pointer}
+.srchres{
+  position:absolute;top:31px;left:0;right:0;z-index:1200;display:none;
+  max-height:260px;overflow:auto;background:#fff;border:1px solid var(--line);
+  border-radius:6px;box-shadow:0 8px 22px rgba(16,24,40,.16);
+}
+.srchres.show{display:block}
+.srchres .it{padding:7px 10px;border-bottom:1px solid var(--line2);cursor:pointer;font-size:11.5px}
+.srchres .it:hover{background:var(--blue-bg)}
+.srchres .it b{display:block;color:var(--txt);font-weight:600}
+.srchres .it .ad{display:block;color:var(--txt3);font-size:10.5px;margin-top:2px}
+.srchres .it .no{color:var(--txt3)}
+.mapstage{flex:1 1 auto;position:relative;min-height:0;background:#e8edf3}
+#fenceMap{width:100%;height:100%}
+.leaflet-container{font:12px/1.5 system-ui,"Microsoft YaHei",sans-serif;background:#e8edf3}
+.leaflet-default-icon-path{background-image:url("../assets/marker-icon.png")}
+.leaflet-control-attribution{background:rgba(255,255,255,.75)!important;font-size:10px!important}
+.maptip{
+  position:absolute;left:50%;bottom:14px;transform:translateX(-50%);z-index:800;
+  display:none;max-width:82%;padding:6px 12px;border-radius:6px;
+  background:rgba(27,35,51,.92);color:#fff;font-size:11.5px;line-height:1.5;
+  box-shadow:0 4px 14px rgba(0,0,0,.18);pointer-events:none;
+}
+.maptip.show{display:block}
+.mapfoot{
+  flex:0 0 auto;display:flex;align-items:center;gap:10px;flex-wrap:wrap;
+  padding:9px 11px;border-top:1px solid var(--line);background:#fafbfc;
+}
+.flist{flex:1 1 300px;display:flex;gap:6px;flex-wrap:wrap;min-height:24px;align-items:center}
+.flist .note{color:var(--txt3);font-size:11px}
+.fchip{
+  display:inline-flex;align-items:center;gap:5px;padding:2px 7px;border-radius:11px;
+  background:var(--blue-bg);border:1px solid #cfe0fb;color:#0C447C;font-size:11px;
+}
+.fchip b{cursor:pointer;color:var(--red);font-size:12px;line-height:1}
+.fbtns{display:flex;gap:7px;flex:0 0 auto}
+
+/* ---------- 参数表 ---------- */
+.quick{
+  display:flex;gap:9px;align-items:center;flex-wrap:wrap;
+  padding:9px 11px;background:var(--amber-bg);border:1px solid #f0dfb5;
+  border-radius:6px;margin-bottom:11px;font-size:11.5px;color:var(--amber);
+}
+.quick input{height:28px;padding:0 8px;border:1px solid #e3cf9b;border-radius:4px;background:#fff;font-family:var(--mono);font-size:12px}
+#qHost{width:190px} #qPort{width:74px}
+
+table.pt{width:100%;border-collapse:collapse;font-size:12px}
+table.pt th{
+  text-align:left;font-weight:600;color:var(--txt2);font-size:11px;
+  padding:6px 7px;border-bottom:1px solid var(--line);background:#fafbfc;white-space:nowrap;
+}
+table.pt td{padding:4px 7px;border-bottom:1px solid var(--line2);vertical-align:middle}
+table.pt tr:last-child td{border-bottom:none}
+table.pt tr.on td{background:#f7fafd}
+table.pt td.c{text-align:center;width:34px}
+table.pt td.id{font-family:var(--mono);font-size:11.5px;color:var(--blue);font-weight:600;white-space:nowrap;width:64px}
+table.pt td.nm{white-space:nowrap;width:150px}
+table.pt td.nm i{display:block;font-style:normal;font-size:10.5px;color:var(--txt3);line-height:1.35}
+table.pt input[type=text]{
+  width:100%;height:27px;padding:0 7px;border:1px solid var(--line);border-radius:4px;
+  font-family:var(--mono);font-size:12px;background:#fff;outline:none;
+}
+table.pt input[type=text]:focus{border-color:var(--blue);box-shadow:0 0 0 2px var(--blue-bg)}
+table.pt input[type=text]:disabled{background:#f4f5f7;color:var(--txt3);cursor:not-allowed}
+table.pt input[type=text].bad{border-color:var(--red);background:var(--red-bg)}
+table.pt input[type=checkbox]{width:15px;height:15px;cursor:pointer;accent-color:var(--blue)}
+.msg{
+  margin-top:10px;padding:7px 10px;border-radius:5px;font-size:11.5px;
+  background:var(--red-bg);color:var(--red);border:1px solid #f3c9c9;display:none;
+}
+.msg.show{display:block}
+.msg.ok{background:var(--green-bg);color:var(--green);border-color:#c3e2d3}
+
+/* ---------- 报文输出 ---------- */
+.out{
+  font-family:var(--mono);font-size:12px;line-height:1.85;letter-spacing:.4px;
+  word-break:break-all;background:#fbfcfd;border:1px solid var(--line2);
+  border-radius:6px;padding:11px 12px;min-height:76px;user-select:text;
+}
+.out .h{color:var(--blue);font-weight:600}
+.out .b{color:var(--green);font-weight:600}
+.out .k{color:var(--red);font-weight:600}
+.out .f{color:#98a0ab}
+.out .empty{color:var(--txt3);font-weight:400;letter-spacing:0}
+.meta{display:flex;gap:0;flex-wrap:wrap;margin-top:9px;font-size:11.5px;color:var(--txt2);line-height:1.9}
+.meta i{font-style:normal;color:var(--txt3);margin:0 7px}
+.meta b{color:var(--txt);font-family:var(--mono);font-weight:600;margin-left:2px}
+
+/* ---------- 复制预览（点复制后显示带空格 / 无空格两份） ---------- */
+.copied{margin-top:10px;display:none}
+.copied.show{display:block}
+.cp{border:1px solid var(--line);border-radius:6px;background:#fbfcfd;overflow:hidden}
+.cp + .cp{margin-top:8px}
+.cp .ch{
+  display:flex;align-items:center;gap:8px;padding:5px 10px;
+  background:#f2f5f9;border-bottom:1px solid var(--line2);
+  font-size:11px;color:var(--txt2);
+}
+.cp .ch b{color:var(--txt);font-weight:600}
+.cp .ch .len{margin-left:auto;font-family:var(--mono);color:var(--txt3);font-size:10.5px;background:#fff;
+  border:1px solid var(--line2);border-radius:8px;padding:1px 7px;letter-spacing:0}
+.cp .cv{
+  padding:8px 10px;font-family:var(--mono);font-size:11.5px;line-height:1.8;letter-spacing:.3px;
+  word-break:break-all;user-select:text;max-height:104px;overflow:auto;
+}
+.cp .cv.nowrap{letter-spacing:.2px}
+
+/* ---------- 发送到平台 ---------- */
+.sendhd{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:9px}
+.sendhd .tag{
+  font-size:10.5px;font-weight:700;letter-spacing:1.2px;color:#fff;
+  background:var(--blue);border-radius:4px;padding:2px 7px;
+}
+.sendhd .surl{font-size:11.5px;color:var(--txt2)}
+.sendhd .surl code{font-family:var(--mono);font-size:11px;color:var(--blue)}
+.srvrow{display:none;gap:8px;flex-wrap:wrap;align-items:flex-end;margin-bottom:10px}
+.srvrow.show{display:flex}
+.payload{margin-bottom:10px}
+.pl{
+  display:flex;gap:9px;align-items:baseline;padding:4px 9px;border-radius:5px;
+  background:#fbfcfd;border:1px solid var(--line2);font-size:11.5px;
+}
+.pl + .pl{margin-top:5px}
+.pl .pk{
+  flex:none;font-family:var(--mono);font-size:10.5px;color:var(--txt3);
+  min-width:32px;
+}
+.pl code{
+  font-family:var(--mono);font-size:11.5px;color:var(--txt);
+  word-break:break-all;user-select:text;
+}
+.btn.send{
+  background:var(--green);color:#fff;border:1px solid #1c5940;font-weight:600;
+}
+.btn.send:hover{background:#1e5c42}
+.btn.send:disabled{background:var(--gray-bg);color:var(--txt3);border-color:var(--line);cursor:not-allowed}
+.sendres{margin-top:10px;display:none}
+.sendres.show{display:block}
+.rly{
+  display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--txt3);
+  padding-left:4px;white-space:nowrap;align-self:center;
+}
+.rly::before{
+  content:"";width:7px;height:7px;border-radius:50%;background:#c2c8d0;flex:0 0 auto;
+}
+.rly.on{color:var(--green)}
+.rly.on::before{background:var(--green)}
+.rly.off{color:var(--amber)}
+.rly.off::before{background:#c98a00}
+.sr{
+  border-radius:6px;padding:9px 11px;font-size:12px;line-height:1.7;
+  border:1px solid;word-break:break-all;
+}
+.sr.ok{background:var(--green-bg);border-color:#c3e2d3;color:var(--green)}
+.sr.err{background:var(--red-bg);border-color:#f3c9c9;color:var(--red)}
+.sr.warn{background:var(--amber-bg);border-color:#f0dcb0;color:var(--amber)}
+.sr .srt{font-weight:700;margin-bottom:3px}
+.sr .srd{font-family:var(--mono);font-size:11px;opacity:.92;white-space:pre-wrap;margin-top:5px;
+  background:rgba(255,255,255,.6);border-radius:4px;padding:6px 8px;max-height:150px;overflow:auto}
+
+/* ---------- 结果弹窗 ---------- */
+.modal{
+  position:fixed;inset:0;background:rgba(20,26,34,.42);z-index:100;
+  display:none;align-items:center;justify-content:center;padding:20px;
+}
+.modal.show{display:flex}
+.mbox{
+  background:#fff;border-radius:10px;box-shadow:0 14px 44px rgba(20,26,34,.26);
+  width:100%;max-width:430px;overflow:hidden;animation:mpop .17s ease-out;
+}
+@keyframes mpop{from{transform:translateY(9px) scale(.98);opacity:.5}to{transform:none;opacity:1}}
+.mhd{
+  display:flex;align-items:center;gap:10px;padding:14px 17px 11px;
+  font-size:14px;font-weight:600;
+}
+.mhd .mic{
+  flex:none;width:26px;height:26px;border-radius:50%;display:flex;
+  align-items:center;justify-content:center;font-size:15px;color:#fff;font-weight:700;
+}
+.mbox.ok  .mhd{color:var(--green)}  .mbox.ok  .mic{background:var(--green)}
+.mbox.err .mhd{color:var(--red)}    .mbox.err .mic{background:var(--red)}
+.mbox.warn .mhd{color:var(--amber)} .mbox.warn .mic{background:#c98a00}
+.mbody{padding:0 17px 4px;font-size:12.5px;color:var(--txt2);line-height:1.75;word-break:break-all}
+.mbody code{font-family:var(--mono);color:var(--txt);background:#f4f6f9;border-radius:3px;padding:1px 5px;font-size:11.5px}
+.mbody pre{
+  font-family:var(--mono);font-size:11px;background:#f7f9fb;border:1px solid var(--line2);
+  border-radius:5px;padding:8px;margin:8px 0 0;max-height:160px;overflow:auto;white-space:pre-wrap;
+}
+.mfoot{display:flex;justify-content:flex-end;gap:8px;padding:13px 17px 15px}
+.legend{display:flex;gap:13px;flex-wrap:wrap;margin-top:7px;font-size:10.5px;color:var(--txt3)}
+.legend span::before{content:"";display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px;vertical-align:0}
+.legend .lh::before{background:#1f5fa8} .legend .lb::before{background:#256e4f}
+.legend .lk::before{background:#b52a2a} .legend .lf::before{background:#98a0ab}
+.acts{display:flex;gap:7px;margin-top:11px;flex-wrap:wrap}
+
+/* ---------- 反解 ---------- */
+textarea#rx{
+  width:100%;height:104px;padding:9px 10px;border:1px solid var(--line);border-radius:5px;
+  font-family:var(--mono);font-size:12px;line-height:1.6;resize:vertical;outline:none;
+  background:#fff;
+}
+textarea#rx:focus{border-color:var(--blue);box-shadow:0 0 0 3px var(--blue-bg)}
+.parsed{margin-top:11px;font-size:12px;display:none}
+.parsed.show{display:block}
+.parsed table{width:100%;border-collapse:collapse}
+.parsed td{padding:3px 7px;border-bottom:1px solid var(--line2);vertical-align:top}
+.parsed td:first-child{color:var(--txt2);width:auto;white-space:nowrap;font-size:11.5px}
+.parsed td:last-child{font-family:var(--mono);font-size:11.5px;word-break:break-all}
+.parsed .okv{color:var(--green);font-weight:600}
+.parsed .errv{color:var(--red);font-weight:600}
+
+/* 多帧时的帧标题条 */
+.frameBar{
+  display:flex;align-items:center;gap:8px;flex-wrap:wrap;
+  padding:6px 9px;background:#f0f4f9;border:1px solid #d5e0ec;border-radius:5px;
+  font-size:11.5px;color:var(--txt2);margin:2px 0 8px;
+}
+.frameBar .idx{
+  background:var(--blue);color:#fff;border-radius:3px;padding:1px 6px;
+  font-weight:600;font-size:10.5px;
+}
+.frameBar .ok{color:var(--green);font-weight:600}
+.frameBar .ng{color:var(--red);font-weight:600}
+.frameBar .cp{margin-left:auto}
+.frameWrap{margin-bottom:14px}
+.frameWrap:last-child{margin-bottom:0}
+
+/* JSON 视图 */
+.jsonView{
+  font-family:var(--mono);font-size:11.5px;line-height:1.65;
+  background:#fbfcfd;border:1px solid var(--line2);border-radius:6px;
+  padding:10px 12px;white-space:pre;overflow:auto;max-height:520px;
+  user-select:text;color:var(--txt);
+}
+.jsonView .jk{color:#1f5fa8}
+.jsonView .js{color:#256e4f}
+.jsonView .jn{color:#b52a2a}
+.jsonView .jb{color:#8a5b00}
+.viewTabs{display:flex;gap:0;margin-bottom:10px;border-bottom:1px solid var(--line2)}
+.viewTabs button{
+  border:none;background:transparent;padding:6px 13px;font-size:12px;color:var(--txt2);
+  border-bottom:2px solid transparent;margin-bottom:-1px;
+}
+.viewTabs button.on{color:var(--blue);border-bottom-color:var(--blue);font-weight:600}
+.parsed .sec td{background:#fafbfc;font-weight:600;color:var(--blue);font-family:inherit;font-size:11.5px}
+.parsed .okv{color:var(--green);font-weight:600}
+.parsed .errv{color:var(--red);font-weight:600}
+
+.toast{
+  position:fixed;left:50%;bottom:34px;transform:translate(-50%,14px);
+  background:#252b33;color:#fff;font-size:12.5px;padding:8px 18px;border-radius:6px;
+  opacity:0;pointer-events:none;transition:.22s;z-index:99;box-shadow:0 6px 20px rgba(0,0,0,.2);
+}
+.toast.show{opacity:1;transform:translate(-50%,0)}
+
+/* ============================================================
+ * V1.2.1 视觉升级：渐变底、柔和阴影、大圆角、页面标题区
+ * 以覆盖层方式追加，不改动原有组件样式定义。
+ * ============================================================ */
+:root{
+  --bg:#f6f8fc; --line:#e5ebf4; --line2:#f0f4fa;
+  --txt2:#5b6678; --txt3:#6f7a8d;
+  --blue:#2563eb; --violet:#6d5dfc; --blue-bg:#eef3ff;
+  --shadow:0 1px 2px rgba(17,29,54,.04), 0 10px 28px rgba(17,29,54,.055);
+  --shadow-h:0 2px 6px rgba(17,29,54,.06), 0 18px 40px rgba(17,29,54,.10);
+  --r:16px;
+}
+body{
+  background:
+    radial-gradient(940px 500px at 6% -10%, rgba(80,116,255,.13), transparent 62%),
+    radial-gradient(780px 440px at 98% -4%, rgba(140,100,255,.10), transparent 62%),
+    var(--bg);
+  font:13.5px/1.68 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+header{
+  height:62px;padding:0 20px;gap:14px;
+  background:linear-gradient(105deg,#111a2c 0%,#1b2333 52%,#202c46 100%);
+  border-bottom:1px solid rgba(255,255,255,.07);
+  box-shadow:0 6px 24px rgba(15,23,42,.20);
+}
+.tb-brand{gap:11px;padding-right:18px}
+.tb-brand h1{font-size:14px;letter-spacing:.3px}
+.tb-brand small{font-size:10.5px;color:#8d9ab0;margin-top:2px}
+.tb-nav{gap:5px}
+.tb-nav a{height:36px;padding:0 15px;border-radius:10px;font-size:13px;color:#aeb9cc;transition:.18s}
+.tb-nav a:hover{background:rgba(255,255,255,.09);color:#fff}
+.tb-nav a.on{
+  background:linear-gradient(135deg,var(--blue),var(--violet));color:#fff;font-weight:600;
+  box-shadow:0 5px 16px rgba(70,95,235,.42), inset 0 1px 0 rgba(255,255,255,.22);
+}
+.tb-nav .dot{width:7px;height:7px;border-radius:2px;flex:0 0 auto;background:#6d7a92;transition:.18s}
+.tb-nav .dot.d1{background:#5b8cff}
+.tb-nav .dot.d2{background:#3ec9a3}
+.tb-nav .dot.d3{background:#f2a75c}
+.tb-nav .dot.d4{background:#b58cf5}
+.tb-nav a.on .dot{background:#fff;box-shadow:0 0 0 3px rgba(255,255,255,.22)}
+.tb-right .ver{border-radius:20px;background:rgba(255,255,255,.08);border-color:rgba(255,255,255,.14);color:#b7c3d8}
+
+/* 页面标题区 */
+.pagehead{
+  max-width:1680px;margin:0 auto;padding:26px 22px 2px;
+  display:flex;align-items:flex-end;gap:18px;flex-wrap:wrap;
+}
+.ph-l{min-width:0}
+.ph-kicker{
+  display:inline-block;font:600 10.5px/1 var(--mono);letter-spacing:1.4px;
+  color:#4c5fd0;background:#eef1ff;border:1px solid #dfe5ff;
+  border-radius:20px;padding:5px 11px;margin-bottom:11px;
+}
+.pagehead h2{
+  margin:0;font-size:25px;line-height:1.25;font-weight:700;letter-spacing:-.5px;
+  background:linear-gradient(100deg,#1b2333 18%,#3b56b8 100%);
+  -webkit-background-clip:text;background-clip:text;color:transparent;
+}
+.pagehead p{margin:6px 0 0;font-size:12.5px;color:#5f6b83}
+.ph-r{margin-left:auto;padding-bottom:5px}
+.ph-badge{
+  display:inline-block;font-size:11.5px;color:#40527a;background:#fff;
+  border:1px solid #e4eaf5;border-radius:20px;padding:7px 14px;
+  box-shadow:0 2px 8px rgba(17,29,54,.05);
+}
+.runbar{border-radius:12px;border-color:#ecdfbb}
+
+.wrap{gap:18px;padding:18px 22px 56px;max-width:1680px}
+.colL,.colR{gap:16px}
+.colR{top:80px}
+@media(max-width:1150px){ .colR{position:static} .pagehead{padding:20px 16px 2px} }
+
+/* 卡片：大圆角 / 柔光阴影 / 依次入场 */
+.card{
+  border:1px solid rgba(224,231,242,.92);border-radius:var(--r);
+  box-shadow:var(--shadow);
+  transition:box-shadow .22s ease;
+  animation:cardIn .24s cubic-bezier(.2,.7,.3,1) both;
+}
+.card:hover{box-shadow:var(--shadow-h)}
+@keyframes cardIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.card>h2{
+  padding:13px 17px;font-size:13px;gap:11px;
+  background:linear-gradient(180deg,#ffffff,#fbfcff);border-bottom:1px solid var(--line2);
+}
+.card>h2 .no{
+  width:4px;height:15px;border-radius:3px;flex:0 0 auto;
+  background:linear-gradient(180deg,var(--blue),var(--violet));
+  font-size:0;color:transparent;box-shadow:none;
+}
+.card>h2 .hint{
+  font-size:11px;color:#5c6880;font-weight:500;background:#f3f6fb;border:1px solid #e8edf5;
+  border-radius:20px;padding:3px 10px;
+}
+.note{color:#6b7688;font-size:11.5px}
+.fprops{color:#5f6b80}
+.frow .note{color:#0C447C;font-weight:600}
+.card .body{padding:16px 17px}
+
+/* 控件 */
+.btn{height:34px;padding:0 15px;border-radius:9px;font-size:12.5px;border-color:#e3e9f2;transition:.18s}
+.btn:hover{transform:translateY(-1px);border-color:#c8d4e8;background:#f8faff;box-shadow:0 4px 12px rgba(17,29,54,.07)}
+.btn.pri{
+  background:linear-gradient(135deg,var(--blue),#5f57ef);border-color:transparent;color:#fff;
+  box-shadow:0 5px 16px rgba(70,95,235,.28);
+}
+.btn.pri:hover{background:linear-gradient(135deg,#1f57dd,#534be6);box-shadow:0 8px 20px rgba(70,95,235,.36)}
+.btn.sm{height:26px;padding:0 10px;border-radius:7px}
+.btn.send{background:linear-gradient(135deg,#16a34a,#0e9a6e);border-color:transparent;box-shadow:0 5px 16px rgba(16,163,106,.25)}
+.btn.send:hover{background:linear-gradient(135deg,#14913f,#0b8c62)}
+.fld label{font-size:11.5px}
+.fld input,.fld select,.quick input,table.pt input[type=text],textarea#rx,
+.tbox input[type="datetime-local"],.srch input,#cParam,#fPts,#srvUrl,#srvTmo{
+  border-radius:9px;border-color:#e2e8f2;transition:.18s;
+}
+.fld input:focus,.fld select:focus,table.pt input[type=text]:focus,textarea#rx:focus,
+.tbox input[type="datetime-local"]:focus,.srch input:focus,#cParam:focus,#fPts:focus{
+  border-color:#7b95ff;box-shadow:0 0 0 4px rgba(80,110,255,.12);
+}
+input,select,textarea{font-size:13px}
+
+/* 命令选择：卡片化按钮，固定 3 列，围栏 6 条正好两行 */
+.seg{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.seg button{
+  min-width:0;width:100%;height:58px;padding:0 15px;border-radius:12px;
+  border:1px solid #e5eaf3;background:#fff;font-size:12.5px;line-height:1.35;
+  box-shadow:0 1px 2px rgba(17,29,54,.03);transition:.18s;
+}
+.seg button:hover{transform:translateY(-2px);border-color:#c6d5f6;box-shadow:0 8px 18px rgba(17,29,54,.09);background:#fff}
+.seg button b{margin-top:3px;font-size:10.5px;color:#5b6a86;opacity:.9;letter-spacing:.4px}
+.seg button.on{
+  background:linear-gradient(135deg,#eef3ff,#f4f0ff);border-color:#93aaff;color:#2f56d8;
+  box-shadow:0 0 0 1px rgba(90,115,250,.32) inset,0 8px 20px rgba(70,95,235,.12);
+}
+
+/* 各类面板统一圆角 */
+.quick,.fprops,.frow,.bcd,.out,.pl,.cp,.jsonView,.msg,.sr,.frameBar,.jsonView,.legend{border-radius:11px}
+.quick{border-color:#f2e3bd}
+.frow{border-color:#d8e4fb}
+.modeseg{border-radius:9px;overflow:hidden}
+.modeseg button{height:30px}
+.viewTabs button{border-bottom-width:2px}
+.toast{border-radius:9px;box-shadow:0 10px 30px rgba(0,0,0,.24)}
+.modal .mbox,.fbox{border-radius:16px}
+.mcard{border-radius:12px;transition:.18s}
+.mcard:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(17,29,54,.1)}
+
+@media(prefers-reduced-motion:reduce){
+  .card{animation:none}
+  .btn,.seg button,.mcard,.tb-nav a{transition:none}
+  .btn:hover,.seg button:hover,.mcard:hover{transform:none}
+}
+</style>
+</head>
+<body>
+
+<header>
+  <div class="tb-brand">
+    <svg class="picky" viewBox="0 0 64 64" width="27" height="27" aria-label="野猪佩奇">
+      <ellipse cx="21" cy="17" rx="6.4" ry="8" fill="#F2A7BC" transform="rotate(-22 21 17)"/>
+      <ellipse cx="43" cy="17" rx="6.4" ry="8" fill="#F2A7BC" transform="rotate(22 43 17)"/>
+      <ellipse cx="32" cy="35" rx="19" ry="18" fill="#F7B8C9"/>
+      <ellipse cx="32" cy="40" rx="10" ry="7.6" fill="#EF9BB4"/>
+      <ellipse cx="28.4" cy="40" rx="1.8" ry="2.5" fill="#B4506E"/>
+      <ellipse cx="35.6" cy="40" rx="1.8" ry="2.5" fill="#B4506E"/>
+      <circle cx="25" cy="29" r="2.5" fill="#4A2430"/>
+      <circle cx="39" cy="29" r="2.5" fill="#4A2430"/>
+      <circle cx="25.8" cy="28.2" r="0.9" fill="#FFFFFF"/>
+      <circle cx="39.8" cy="28.2" r="0.9" fill="#FFFFFF"/>
+      <ellipse cx="18.5" cy="38" rx="3.4" ry="2.3" fill="#EE8AA6" opacity=".65"/>
+      <ellipse cx="45.5" cy="38" rx="3.4" ry="2.3" fill="#EE8AA6" opacity=".65"/>
+    </svg>
+    <h1>野猪佩奇专用<small>JT/T 808 报文工具</small></h1>
+  </div>
+  <nav class="tb-nav">
+    <a href="#" data-view="param" class="on"><i class="dot d1"></i>参数设置</a>
+    <a href="#" data-view="fence"><i class="dot d2"></i>电子围栏</a>
+    <a href="#" data-view="ctrl"><i class="dot d3"></i>终端控制</a>
+    <a href="#" data-view="parse"><i class="dot d4"></i>报文反解</a>
+  </nav>
+  <span class="tb-sp"></span>
+  <div class="tb-right">
+    <span class="cpy">© 野猪佩奇 版权所有</span>
+    <span class="ver">V1.2</span>
+  </div>
+</header>
+
+<div class="runbar" id="runbar" style="display:none"></div>
+
+<div class="pagehead">
+  <div class="ph-l">
+    <span class="ph-kicker" id="phKicker">TERMINAL PARAMS</span>
+    <h2 id="phTitle">参数设置</h2>
+    <p id="phDesc">勾选要设置或查询的参数项，填好值，右侧即时生成报文。</p>
+  </div>
+  <div class="ph-r"><span class="ph-badge" id="phBadge">参数项 · 勾选即下发</span></div>
+</div>
+
+<div class="wrap">
+
+  <!-- ===================== 左栏 ===================== -->
+  <div class="colL" id="colL">
+
+    <!-- 1. 设备标识 -->
+    <div class="card" id="cardIdent">
+      <h2><span class="no">1</span>设备标识<span class="hint">终端手机号 = IMSI 后 12 位 BCD[6]</span></h2>
+      <div class="body">
+        <div class="row">
+          <div class="fld">
+            <label>IMSI（15 位）或 手机号（12 位）</label>
+            <input id="ident" type="text" placeholder="例如 460001234567890" autocomplete="off" spellcheck="false">
+          </div>
+          <div class="fld">
+            <label>消息流水号</label>
+            <input id="seq" type="text" value="1" autocomplete="off" spellcheck="false">
+          </div>
+          <button class="btn sm ghost" id="btnSeq" style="height:31px">换一个</button>
+        </div>
+        <div class="row" style="margin-top:9px">
+          <div class="bcd" id="bcdBox">输入 IMSI 后这里显示实际写入报文的 BCD 字节</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- 2. 报文类型 -->
+    <div class="card" id="cardType">
+      <h2><span class="no">2</span><span id="typeTitle">报文类型</span></h2>
+      <div class="body">
+        <div class="seg" id="seg">
+          <button data-t="8103" data-group="param" class="on">设置终端参数<b>0x8103</b></button>
+          <button data-t="8104" data-group="param">查询全部参数<b>0x8104</b></button>
+          <button data-t="8106" data-group="param">查询指定参数<b>0x8106</b></button>
+          <button data-t="8105" data-group="ctrl">终端控制<b>0x8105</b></button>
+          <button data-t="8600" data-group="fence">设置圆形区域<b>0x8600</b></button>
+          <button data-t="8601" data-group="fence">删除圆形区域<b>0x8601</b></button>
+          <button data-t="8602" data-group="fence">设置矩形区域<b>0x8602</b></button>
+          <button data-t="8603" data-group="fence">删除矩形区域<b>0x8603</b></button>
+          <button data-t="8604" data-group="fence">设置多边形区域<b>0x8604</b></button>
+          <button data-t="8605" data-group="fence">删除多边形区域<b>0x8605</b></button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3. 参数表 -->
+    <div class="card" id="cardParam">
+      <h2><span class="no">3</span>参数配置<span class="hint" id="paramHint">勾选要下发的项</span></h2>
+      <div class="body">
+        <div class="quick">
+          <span style="font-weight:600">服务器快捷填</span>
+          <input id="qHost" type="text" placeholder="IP 或域名" spellcheck="false">
+          <span>:</span>
+          <input id="qPort" type="text" placeholder="端口">
+          <button class="btn sm" id="btnQuick">填入 0x0013 + 0x0018</button>
+          <button class="btn sm ghost" id="btnDefault">恢复默认服务器</button>
+        </div>
+        <table class="pt">
+          <thead>
+            <tr>
+              <th class="c"></th><th>参数 ID</th><th>名称</th><th>值</th>
+            </tr>
+          </thead>
+          <tbody id="pbody"></tbody>
+        </table>
+        <div class="msg" id="pmsg"></div>
+      </div>
+    </div>
+
+    <!-- 3c. 8105 -->
+    <div class="card" id="card8105" style="display:none">
+      <h2><span class="no">3</span>终端控制 0x8105</h2>
+      <div class="body">
+        <div class="row">
+          <div class="fld"><label>命令字</label>
+            <select id="cWord" style="width:260px">
+              <option value="2">2 连接指定服务器</option>
+              <option value="3">3 终端关机</option>
+              <option value="4">4 终端复位</option>
+              <option value="5">5 恢复出厂设置</option>
+            </select>
+          </div>
+          <div class="fld" style="flex:1 1 240px"><label>命令参数（格式见下，半角分号分隔，无值留空）</label>
+            <input id="cParam" type="text" style="height:31px;padding:0 9px;border:1px solid var(--line);border-radius:5px;background:#fff;width:100%" spellcheck="false">
+          </div>
+        </div>
+        <div class="note" id="cFmtNote" style="margin:2px 0 8px"></div>
+        <div class="row" id="cTplRow" style="display:none;align-items:center">
+          <button type="button" class="btn sm ghost" id="btnCtrlTpl">填入示例模板</button>
+          <span class="hint" style="margin-left:8px;font-size:11px;color:var(--txt3)">示例值需替换为实际参数</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- 3d. 电子围栏 -->
+    <div class="card" id="cardFence" style="display:none">
+      <h2><span class="no">3</span>电子围栏<span class="hint" id="fenceHint"></span></h2>
+      <div class="body">
+        <!-- 设置类：0x8600 / 0x8602 / 0x8604 -->
+        <div id="fenceSet">
+          <div class="row">
+            <div class="fld" id="fldOp">
+              <label>操作</label>
+              <select id="fOp" style="width:190px">
+                <option value="0">0 更新（清空同类后写）</option>
+                <option value="1">1 追加</option>
+                <option value="2">2 修改（按 ID 覆盖）</option>
+              </select>
+            </div>
+            <div class="fld"><label>区域 ID</label>
+              <input id="fId" type="text" value="1" style="width:110px;font-family:var(--mono)" spellcheck="false">
+            </div>
+          </div>
+
+          <div class="fprops">
+            <span class="pt">区域属性</span>
+            <label><input type="checkbox" id="fPTime"> bit0 起止时间</label>
+            <label><input type="checkbox" id="fPSpeed"> bit1 限速</label>
+            <label><input type="checkbox" id="fPIn" checked> bit3 进区域报警</label>
+            <label><input type="checkbox" id="fPOut" checked> bit5 出区域报警</label>
+            <span class="pv">= <b id="fPropHex">0x0028</b></span>
+          </div>
+          <div class="note" style="margin:-6px 0 11px">bit3 / bit5 都不勾：区域照存，但不产生进出区域报警。</div>
+
+          <!-- V1.2：绘图方式 / 手动输入方式 二选一 -->
+          <div class="frow">
+            <button type="button" class="btn pri" id="btnFenceDraw">绘制围栏</button>
+            <button type="button" class="btn sm ghost" id="btnFenceClear">清空图形</button>
+            <span class="note" id="fenceMapInfo">未画图形：按下方输入框手工组包</span>
+          </div>
+
+          <div id="fenceTime" style="display:none">
+            <div class="row">
+              <div class="fld"><label>起始时间</label>
+                <div class="tbox">
+                  <input id="fT1" type="datetime-local" step="1" style="width:198px">
+                  <button type="button" class="btn sm ghost" data-clr="fT1">清空</button>
+                </div>
+                <span class="tv" id="fT1v"></span>
+              </div>
+              <div class="fld"><label>结束时间</label>
+                <div class="tbox">
+                  <input id="fT2" type="datetime-local" step="1" style="width:198px">
+                  <button type="button" class="btn sm ghost" data-clr="fT2">清空</button>
+                </div>
+                <span class="tv" id="fT2v"></span>
+              </div>
+              <div class="fld" style="flex:1 1 100%"><span class="note" id="fTimeNote"></span></div>
+            </div>
+          </div>
+
+          <div class="row" id="fenceSpeed" style="display:none">
+            <div class="fld"><label>最高速度 <i>km/h</i></label>
+              <input id="fSpd" type="text" value="60" style="width:100px;font-family:var(--mono)" spellcheck="false">
+            </div>
+            <div class="fld"><label>超速持续 <i>秒</i></label>
+              <input id="fSpdDur" type="text" value="10" style="width:100px;font-family:var(--mono)" spellcheck="false">
+            </div>
+          </div>
+
+          <!-- 圆形 -->
+          <div class="row" id="fenceCircle">
+            <div class="fld"><label>中心纬度 <i>度</i></label>
+              <input id="fLat" type="text" value="31.230416" style="width:130px;font-family:var(--mono)" spellcheck="false">
+            </div>
+            <div class="fld"><label>中心经度 <i>度</i></label>
+              <input id="fLon" type="text" value="121.473701" style="width:130px;font-family:var(--mono)" spellcheck="false">
+            </div>
+            <div class="fld"><label>半径 <i>米</i></label>
+              <input id="fRadius" type="text" value="500" style="width:100px;font-family:var(--mono)" spellcheck="false">
+            </div>
+          </div>
+
+          <!-- 矩形：两种填法用按钮切换，手工填两角仍是报文取数的唯一来源 -->
+          <div id="fenceRect" style="display:none">
+            <div class="modeseg">
+              <button type="button" data-shape="rect" data-mode="manual" class="on">手工填两角</button>
+              <button type="button" data-shape="rect" data-mode="center">按中心点+半径</button>
+            </div>
+            <div class="row" id="rectManual">
+              <div class="fld"><label>左上纬度 <i>度</i></label>
+                <input id="fLat1" type="text" value="31.240000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>左上经度 <i>度</i></label>
+                <input id="fLon1" type="text" value="121.460000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>右下纬度 <i>度</i></label>
+                <input id="fLat2" type="text" value="31.220000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>右下经度 <i>度</i></label>
+                <input id="fLon2" type="text" value="121.490000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+            </div>
+            <div class="row" id="rectCenter" style="display:none">
+              <div class="fld"><label>中心纬度 <i>度</i></label>
+                <input id="rFLat" type="text" value="31.230000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>中心经度 <i>度</i></label>
+                <input id="rFLon" type="text" value="121.475000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>半径 <i>米（中心到边）</i></label>
+                <input id="rFRadius" type="text" value="500" style="width:110px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <button class="btn sm" id="btnRectFill" style="height:31px">算两角并填入</button>
+            </div>
+          </div>
+
+          <!-- 多边形：同上，手工顶点表 / 中心点+半径+顶点数 -->
+          <div id="fencePoly" style="display:none">
+            <div class="modeseg">
+              <button type="button" data-shape="poly" data-mode="manual" class="on">手工填顶点</button>
+              <button type="button" data-shape="poly" data-mode="center">按中心点+半径</button>
+            </div>
+            <div class="row" id="polyCenter" style="display:none">
+              <div class="fld"><label>中心纬度 <i>度</i></label>
+                <input id="pFLat" type="text" value="31.230000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>中心经度 <i>度</i></label>
+                <input id="pFLon" type="text" value="121.475000" style="width:130px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>半径 <i>米（中心到顶点）</i></label>
+                <input id="pFRadius" type="text" value="500" style="width:110px;font-family:var(--mono)" spellcheck="false">
+              </div>
+              <div class="fld"><label>顶点数 <i>3~10</i></label>
+                <select id="pFN" style="width:80px">
+                  <option value="3">3</option><option value="4">4</option>
+                  <option value="5">5</option><option value="6" selected>6</option>
+                  <option value="7">7</option><option value="8">8</option>
+                  <option value="9">9</option><option value="10">10</option>
+                </select>
+              </div>
+              <button class="btn sm" id="btnPolyFill" style="height:31px">生成顶点并填入</button>
+            </div>
+            <div class="row" id="polyManual">
+              <div class="fld" style="flex:1 1 100%">
+                <label>顶点列表 <i>每行「纬度,经度」，3~10 个点，首尾不重复</i></label>
+                <textarea id="fPts" rows="5" style="width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:5px;font-family:var(--mono);font-size:12px;line-height:1.6" spellcheck="false">31.240000,121.460000
+31.240000,121.490000
+31.220000,121.490000
+31.220000,121.460000</textarea>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 删除类：0x8601 / 0x8603 / 0x8605 -->
+        <div id="fenceDel" style="display:none">
+          <div class="row">
+            <div class="fld" style="flex:1 1 100%">
+              <label>要删除的区域 ID <i>逗号或空格分隔；留空 = 删除全部同类区域（数量填 0）</i></label>
+              <input id="fIds" type="text" placeholder="1, 2, 3" style="width:100%;font-family:var(--mono)" spellcheck="false">
+            </div>
+          </div>
+        </div>
+
+        <div class="msg" id="fmsg"></div>
+        <div class="note" id="fenceDoc" style="margin-top:9px"></div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- ===================== 右栏 ===================== -->
+  <div class="colR" id="colR">
+
+    <!-- 输出 -->
+    <div class="card" id="cardOut">
+      <h2><span class="no">4</span>生成结果<span class="hint" id="outHint"></span></h2>
+      <div class="body">
+        <div class="out" id="out"><span class="empty">等待输入…</span></div>
+        <div class="legend">
+          <span class="lh">消息头</span><span class="lb">消息体</span>
+          <span class="lk">校验码</span><span class="lf">7E 帧头/帧尾</span>
+        </div>
+        <div class="meta" id="meta"></div>
+        <div class="copied" id="copied"></div>
+        <div class="acts">
+          <button class="btn pri" id="btnCopy">复制报文（无空格）</button>
+          <button class="btn" id="btnCopySpace">复制报文（带空格）</button>
+        </div>
+        <div class="msg" id="omsg"></div>
+      </div>
+    </div>
+
+    <!-- 下发 -->
+    <div class="card" id="cardSend">
+      <h2><span class="no">5</span>POST 下发到设备<span class="hint">imei + cmd 发到平台接口</span></h2>
+      <div class="body">
+        <div class="sendhd">
+          <span class="tag">发 送</span>
+          <span class="surl">POST <code id="srvUrlText">http://10.85.40.3:1813/client/sendRaw</code></span>
+          <button class="btn sm ghost" id="btnSrv" style="margin-left:auto">改地址</button>
+        </div>
+        <div class="srvrow" id="srvRow">
+          <div class="fld" style="flex:1 1 260px">
+            <label>平台发送接口</label>
+            <input id="srvUrl" type="text" value="http://10.85.40.3:1813/client/sendRaw" spellcheck="false" autocomplete="off">
+          </div>
+          <div class="fld" style="flex:0 0 96px">
+            <label>超时(秒)</label>
+            <input id="srvTmo" type="text" value="10" spellcheck="false" autocomplete="off">
+          </div>
+          <button class="btn sm ghost" id="btnSrvSave" style="height:31px;align-self:flex-end">保存</button>
+        </div>
+        <div class="payload" id="payloadBox">
+          <div class="pl"><span class="pk">imei</span><code id="plImei">—</code></div>
+          <div class="pl"><span class="pk">cmd</span><code id="plCmd">—</code></div>
+        </div>
+        <div class="acts">
+          <button class="btn send" id="btnSend">发送到设备</button>
+          <span class="rly" id="relayTip">中转状态检测中…</span>
+        </div>
+        <div class="sendres" id="sendRes"></div>
+      </div>
+    </div>
+
+    <!-- 反解 -->
+    <div class="card" id="cardParse">
+      <h2><span class="no">6</span>报文反解<span class="hint" id="rxHint">粘贴设备上行报文核对</span></h2>
+      <div class="body">
+        <textarea id="rx" placeholder="粘贴 7E…7E 报文支持三种写法：
+① 有空格  7E 81 03 00 24 … 7E
+② 无空格  7E81030024…7E
+③ 多条连续  7E…7E 7E…7E（自动按帧拆分）
+也容忍换行与日志前缀"></textarea>
+        <div class="acts">
+          <button class="btn pri" id="btnParse">解析</button>
+          <button class="btn ghost" id="btnClear">清空</button>
+        </div>
+        <div class="parsed" id="parsed"></div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<!-- 发送结果弹窗 -->
+<div class="modal" id="modal">
+  <div class="mbox ok" id="mbox">
+    <div class="mhd"><span class="mic" id="mIcon">✓</span><span id="mTitle">发送成功</span></div>
+    <div class="mbody" id="mBody"></div>
+    <div class="mfoot">
+      <button class="btn ghost" id="mClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 围栏：绘图方式 / 手动输入方式 -->
+<div class="fdlg" id="dlgMode">
+  <div class="fmask" id="modeMask"></div>
+  <div class="fbox">
+    <div class="fhd"><b>选择围栏设置方式</b><span class="fx" id="modeX">✕</span></div>
+    <div class="fbd">
+      <div class="modepick">
+        <button type="button" class="mcard" id="modeDraw">
+          <b>绘图方式</b>
+          <span>打开在线地图，像平台一样圈圆 / 矩形 / 多边形；可画多个、删第几个或全部；画完自动回填坐标并组包</span>
+        </button>
+        <button type="button" class="mcard" id="modeManual">
+          <b>手动输入方式</b>
+          <span>保持原来的数字表单，直接填经纬度 / 半径 / 顶点，含「按中心点 + 半径」自动算点</span>
+        </button>
+      </div>
+      <div class="note" style="margin-top:11px">
+        绘图方式需要外网加载底图（高德 / Esri）与地点搜索（Photon）；断网时地图会白屏，请改用手动输入方式。
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- 围栏：地图绘制 -->
+<div class="fdlg" id="dlgMap">
+  <div class="fmask" id="mapMask"></div>
+  <div class="fbox lg">
+    <div class="fhd">
+      <b>地图绘制围栏</b>
+      <span class="fhint" id="mapHint">点上方「圆形 / 矩形 / 多边形」后在地图上绘制；可连续画多个。</span>
+      <span class="fx" id="mapX">✕</span>
+    </div>
+    <div class="mapbar">
+      <button type="button" id="dCircle">○ 圆形</button>
+      <button type="button" id="dRect">▭ 矩形</button>
+      <button type="button" id="dPoly">⬠ 多边形</button>
+      <button type="button" id="dStop">停止</button>
+      <span class="sp"></span>
+      <div class="srch">
+        <span class="mg">⌕</span>
+        <input id="dSrch" type="text" spellcheck="false" placeholder="搜索地点，定位到地图">
+        <button class="clr" id="dSrchClr" title="清空">✕</button>
+        <div class="srchres" id="dSrchRes"></div>
+      </div>
+      <button type="button" id="dFit">定位图形</button>
+    </div>
+    <div class="mapstage">
+      <div id="fenceMap"></div>
+      <div class="maptip" id="mapTipDraw"></div>
+    </div>
+    <div class="mapfoot">
+      <div class="flist" id="mapFenceList"><span class="note">还没画围栏</span></div>
+      <div class="fbtns">
+        <button type="button" class="btn sm ghost" id="dClearAll">清空全部</button>
+        <button type="button" class="btn" id="dCancel">取消</button>
+        <button type="button" class="btn pri" id="dApply">确定并回填</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="./vendor/leaflet.js"></script>
+<script src="../shared/jt808_codec.js"></script>
+<script src="../shared/jt808_parser.js"></script>
+<script src="../shared/jt808_map.js"></script>
+<script>
+"use strict";
+
+/* ============================================================
+ * 常量与编解码：统一来自 ../shared/（与 jt808_tracker 平台同一份）
+ *   jt808_codec.js  —— 组帧 / 参数 / 围栏 / GBK
+ *   jt808_parser.js —— 50 种消息体反解
+ *   改协议只改 shared/ 一处，两个工具同时生效。
+ * ============================================================ */
+
+/* ============================================================
+ * 工具函数
+ * ============================================================ */
+function $(id){ return document.getElementById(id); }
+
+function toast(msg){
+  var t = $("toast");
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._tm);
+  t._tm = setTimeout(function(){ t.classList.remove("show"); }, 1600);
+}
+
+/* IMSI/手机号 → BCD[6] */
+
+/* 转义 / 反转义 */
+
+/* 组帧：返回 { frame, raw, header, body, cs } */
+
+/* ============================================================
+ * 状态
+ * ============================================================ *//* ============================================================
+ * 状态
+ * ============================================================ */
+var STATE = {
+  view: "param",
+  type: "8103",
+  seqAuto: true,     /* true 表示每次输入变化不跳号，仅按钮手动处理 */
+  lastSeq: 1
+};
+
+/* ============================================================
+ * 顶部页签：四个视图共用同一批卡片，只控制显隐，不重排 DOM
+ * ============================================================ */
+var VIEW_TYPE = { param:"8103", fence:"8600", ctrl:"8105" };
+
+/* 每个页签只讲自己的事：标题、说明、命令类型标题 */
+var VIEW_META = {
+  param: { kicker:"TERMINAL PARAMS / 0x8103 · 0x8104 · 0x8106",
+           title:"参数设置", desc:"勾选要设置或查询的参数项，填好值，右侧即时生成报文。",
+           badge:"参数项 · 勾选即下发", typeTitle:"报文类型" },
+  fence: { kicker:"GEO FENCE / 0x8600 ~ 0x8605",
+           title:"电子围栏", desc:"绘图圈选或手动填坐标，支持圆形 / 矩形 / 多边形与多区域组包。",
+           badge:"绘图 / 手动 · 单帧 ≤10 项", typeTitle:"围栏命令" },
+  ctrl:  { kicker:"TERMINAL CONTROL / 0x8105",
+           title:"终端控制", desc:"选择命令字并填写参数串，生成 0x8105 终端控制报文。",
+           badge:"0x8105 · 命令字 2~5", typeTitle:"终端控制" },
+  parse: { kicker:"FRAME PARSER",
+           title:"报文反解", desc:"粘贴设备上行的 7E…7E 报文，自动拆帧并逐字段解析。",
+           badge:"50 种消息体", typeTitle:"" }
+};
+function syncPageHead(){
+  var m = VIEW_META[STATE.view] || VIEW_META.param;
+  $("phKicker").textContent  = m.kicker;
+  $("phTitle").textContent   = m.title;
+  $("phDesc").textContent    = m.desc;
+  $("phBadge").textContent   = m.badge;
+  $("typeTitle").textContent = m.typeTitle;
+}
+
+function viewOfType(t){
+  if (t === "8105") return "ctrl";
+  if (fenceOn(t)) return "fence";
+  return "param";
+}
+function markNav(){
+  var links = document.querySelectorAll(".tb-nav a");
+  for (var i = 0; i < links.length; i++) {
+    links[i].classList.toggle("on", links[i].getAttribute("data-view") === STATE.view);
+  }
+}
+function syncCards(){
+  var v = STATE.view;
+  var left = (v === "param" || v === "fence" || v === "ctrl");
+  /* 本页只列本页命令：参数页不出现围栏命令，围栏页不出现参数命令 */
+  $("cardType").style.display = (v === "param" || v === "fence") ? "" : "none";
+  var segBtns = $("seg").querySelectorAll("button");
+  for (var k = 0; k < segBtns.length; k++) {
+    segBtns[k].style.display = (segBtns[k].dataset.group === v) ? "" : "none";
+  }
+  $("colL").style.display = left ? "" : "none";
+  $("colR").style.flex   = left ? "" : "1 1 100%";
+  $("cardIdent").style.display = left ? "" : "none";
+  $("cardParam").style.display = (v === "param" && (STATE.type === "8103" || STATE.type === "8106")) ? "" : "none";
+  $("card8105").style.display  = (v === "ctrl" && STATE.type === "8105") ? "" : "none";
+  $("cardFence").style.display = (v === "fence" && fenceOn(STATE.type)) ? "" : "none";
+  $("cardOut").style.display   = (v === "parse") ? "none" : "";
+  $("cardSend").style.display  = (v === "parse") ? "none" : "";
+  $("cardParse").style.display = (v === "parse") ? "" : "none";
+}
+function switchView(v){
+  STATE.view = v;
+  if (VIEW_TYPE[v] && viewOfType(STATE.type) !== v) {
+    STATE.type = VIEW_TYPE[v];
+    var btns = $("seg").querySelectorAll("button");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle("on", btns[i].dataset.t === STATE.type);
+    }
+  }
+  markNav();
+  syncPageHead();
+  syncCards();
+  if (fenceOn(STATE.type)) syncFence();
+  refresh();
+}
+function bindNav(){
+  var links = document.querySelectorAll(".tb-nav a");
+  for (var i = 0; i < links.length; i++) {
+    links[i].addEventListener("click", function (e) {
+      e.preventDefault();
+      switchView(this.getAttribute("data-view"));
+    });
+  }
+}
+
+/* ============================================================
+ * 参数表渲染
+ * ============================================================ */
+function renderParams(){
+  var tb = $("pbody");
+  var html = "";
+  for (var i = 0; i < PARAMS.length; i++) {
+    var p = PARAMS[i];
+    html += '<tr>'
+         +   '<td class="c"><input type="checkbox" class="ck" data-id="' + p.id + '"'
+         +     (p.on ? " checked" : "") + '></td>'
+         +   '<td class="id">' + pidHex(p.id) + '</td>'
+         +   '<td class="nm">' + p.name + '<i>' + p.sub + '</i></td>'
+         +   '<td><input type="text" class="val" data-id="' + p.id + '" value="'
+         +     String(p.def).replace(/"/g, "&quot;") + '" spellcheck="false"></td>'
+         + '</tr>';
+  }
+  tb.innerHTML = html;
+
+  tb.addEventListener("input", function(e){
+    if (e.target.classList.contains("val")) {
+      var row = e.target.closest("tr");
+      var ck = row.querySelector(".ck");
+      if (!ck.checked) ck.checked = true;
+    }
+    refresh();
+  });
+  tb.addEventListener("change", function(e){
+    if (e.target.classList.contains("ck")) {
+      var tr = e.target.closest("tr");
+      tr.classList.toggle("on", e.target.checked);
+      var v = tr.querySelector(".val");
+      if (v) v.disabled = !e.target.checked;
+    }
+    refresh();
+  });
+  /* 初始化勾选态 */
+  var rows = tb.querySelectorAll("tr");
+  for (var k = 0; k < rows.length; k++) {
+    var ck = rows[k].querySelector(".ck");
+    var vv = rows[k].querySelector(".val");
+    vv.disabled = !ck.checked;
+    rows[k].classList.toggle("on", ck.checked);
+  }
+}
+
+function getParamValue(id){
+  var el = document.querySelector('.val[data-id="' + id + '"]');
+  return el ? el.value : "";
+}
+function setParamValue(id, val, check){
+  var el = document.querySelector('.val[data-id="' + id + '"]');
+  var ck = document.querySelector('.ck[data-id="' + id + '"]');
+  if (el) { el.value = val; el.disabled = false; }
+  if (ck && check) { ck.checked = true; }
+  if (el && ck) el.closest("tr").classList.toggle("on", ck.checked);
+}
+
+/* ============================================================
+ * 校验 + 生成
+ * ============================================================ */
+function collect8103(){
+  var items = [], errs = [], bad = [];
+  var cks = document.querySelectorAll(".ck");
+  for (var i = 0; i < cks.length; i++) {
+    if (!cks[i].checked) continue;
+    var pid = parseInt(cks[i].dataset.id, 10);
+    var info = null;
+    for (var j = 0; j < PARAMS.length; j++) if (PARAMS[j].id === pid) info = PARAMS[j];
+    var el = document.querySelector('.val[data-id="' + pid + '"]');
+    var rawVal = el.value;
+    el.classList.remove("bad");
+
+    try {
+      if (info.type === "u32") {
+        if (!/^\d+$/.test(rawVal.trim())) throw new Error("必须是十进制整数");
+        var n = parseInt(rawVal.trim(), 10);
+        if (n < info.min || n > info.max) {
+          throw new Error("范围 " + info.min + "~" + info.max + "，当前 " + n);
+        }
+        items.push({ id:pid, bytes:[(n >>> 24) & 0xFF, (n >>> 16) & 0xFF, (n >>> 8) & 0xFF, n & 0xFF], text:String(n) });
+      } else {
+        var b = encodeStrParam(rawVal);
+        if (info.type === "host") {
+          var s = String(rawVal);
+          if (s.indexOf(":") >= 0) throw new Error("不能带端口，端口请单独用 0x0018 下发");
+          if (s.indexOf(";") >= 0) throw new Error("不能用分号拼接多个地址");
+        }
+        if (b.length < info.minLen) throw new Error("不能为空（至少 " + info.minLen + " 字节）");
+        if (b.length > info.maxLen) throw new Error("长度 " + b.length + " 超过上限 " + info.maxLen);
+        items.push({ id:pid, bytes:b, text:rawVal });
+      }
+    } catch (ex) {
+      errs.push(pidHex(pid) + " " + info.name + "：" + ex.message);
+      el.classList.add("bad");
+      bad.push(pid);
+    }
+  }
+  return { items:items, errs:errs, bad:bad };
+}
+
+function collect8106(){
+  var ids = [], errs = [];
+  var cks = document.querySelectorAll(".ck");
+  for (var i = 0; i < cks.length; i++) {
+    if (!cks[i].checked) continue;
+    var pid = parseInt(cks[i].dataset.id, 10);
+    ids.push(pid);
+    var el = document.querySelector('.val[data-id="' + pid + '"]');
+    if (el) el.classList.remove("bad");
+  }
+  if (ids.length === 0) errs.push("请至少勾选一个要查询的参数");
+  if (ids.length > 9) errs.push("固件一次最多解析 9 项（JT808_PARAM_ITEM_MAX），当前 " + ids.length + " 项");
+  return { ids:ids, errs:errs };
+}
+
+function fenceOn(t){ return !!FENCE_INFO[t]; }
+
+/* 把围栏卡片上的控件读成一个普通对象，交给 shared 的 buildFenceBody 组包。
+ * 组包逻辑（属性位、BCD 时间、限速、经纬度换算）全在 shared/jt808_codec.js，
+ * 这里只负责「读界面」。 */
+function fenceDomOpts(){
+  var info = FENCE_INFO[STATE.type];
+  var prop = {
+    time:  $("fPTime").checked,
+    speed: $("fPSpeed").checked,
+    in:    $("fPIn").checked,
+    out:   $("fPOut").checked
+  };
+
+  /* 删除类：ID 列表 */
+  var raw = String($("fIds").value).trim();
+  var ids = raw ? raw.split(/[\s,，、]+/).filter(function(x){ return x !== ""; }) : [];
+
+  var o = {
+    shape: info.shape,
+    set:   info.set,
+    op:    info.shape === "poly" ? 0 : parseInt($("fOp").value, 10) || 0,
+    ids:   ids,
+    id:    $("fId").value,
+    prop:  prop,
+    time1: $("fT1").value,
+    time2: $("fT2").value,
+    speedVal: $("fSpd").value,
+    speedDur: $("fSpdDur").value,
+    lat:   $("fLat").value,
+    lon:   $("fLon").value,
+    radius: $("fRadius").value,
+    lat1:  $("fLat1").value,
+    lon1:  $("fLon1").value,
+    lat2:  $("fLat2").value,
+    lon2:  $("fLon2").value
+  };
+
+  /* 多边形顶点是一行一个「纬度,经度」，要先拆成数组；格式错的行自己报，
+   * 因为 shared 只认 [[lat,lon], ...]，看不出原始行号。 */
+  if (info.set && info.shape === "poly") {
+    o.points = [];
+    o.pointErrs = [];
+    var lines = String($("fPts").value).split(/\r?\n/)
+      .map(function(l){ return l.trim(); })
+      .filter(function(l){ return l !== ""; });
+    if (lines.length < 3 || lines.length > 10) {
+      o.pointErrs.push("多边形顶点需 3 ~ 10 个，当前 " + lines.length);
+    }
+    for (var k = 0; k < lines.length; k++) {
+      var parts = lines[k].split(/[\s,，]+/).filter(function(x){ return x !== ""; });
+      if (parts.length !== 2) {
+        o.pointErrs.push("第 " + (k + 1) + " 行格式应为「纬度,经度」");
+        continue;
+      }
+      o.points.push([parts[0], parts[1]]);
+    }
+  }
+  /* 绘图方式下，一条报文带多个同形状区域；手动输入时 items 为空，走上面单区域字段 */
+  if (info.set) {
+    var its = mapFenceItems(info);
+    if (its.length) o.items = its;
+  }
+  return o;
+}
+
+function collectFence(){
+  var o = fenceDomOpts();
+  var r = buildFenceBody(o);
+  var errs = (o.pointErrs || []).concat(r.errs);
+  return { errs:errs, body:errs.length ? null : r.body };
+}
+
+/* 围栏卡片联动：报文类型 → 设置/删除与形状；属性位 → 时间/限速行 */
+function syncFence(){
+  var info = FENCE_INFO[STATE.type];
+  if (!info) return;
+  /* 属性位由 shared 的 fencePropVal 算，这里只把勾选状态传进去 */
+  var prop = fencePropVal({
+    time:  $("fPTime").checked,
+    speed: $("fPSpeed").checked,
+    in:    $("fPIn").checked,
+    out:   $("fPOut").checked
+  });
+  $("fPropHex").textContent = "0x" + hex4(prop);
+  $("fenceTime").style.display  = (prop & 0x0001) ? "" : "none";
+  $("fenceSpeed").style.display = (prop & 0x0002) ? "" : "none";
+  $("fenceSet").style.display = info.set ? "" : "none";
+  $("fenceDel").style.display = info.set ? "none" : "";
+  $("fldOp").style.display    = (info.set && info.shape !== "poly") ? "" : "none";
+  $("fenceCircle").style.display = info.shape === "circle" ? "" : "none";
+  $("fenceRect").style.display   = info.shape === "rect"   ? "" : "none";
+  $("fencePoly").style.display   = info.shape === "poly"   ? "" : "none";
+  if (info.shape === "rect") setFenceMode("rect", FENCE_MODE.rect);
+  if (info.shape === "poly") setFenceMode("poly", FENCE_MODE.poly);
+  syncFenceInfo();
+  $("fenceHint").textContent = "0x" + STATE.type + " " + info.name;
+  $("fenceDoc").textContent  = FENCE_DOC[STATE.type] || "";
+  syncFenceTime();
+}
+
+/* 旧版固件把 12 位 BCD 当 UTC 用（jt808_bcd_to_utc_timestamp 不做时区偏移），
+   这里 +8 换算成北京时间便于对照；新版固件按 GMT+8 解释，原值就是北京时间。
+   返回 "" 表示不适用（全 0 或非法） */
+function bcdUtcToBj(d){
+  if (bcdTimeErr(d) || d === "000000000000") return "";
+  var t = Date.UTC(2000 + parseInt(d.substr(0, 2), 10), parseInt(d.substr(2, 2), 10) - 1,
+                   parseInt(d.substr(4, 2), 10), parseInt(d.substr(6, 2), 10),
+                   parseInt(d.substr(8, 2), 10), parseInt(d.substr(10, 2), 10)) + 8 * 3600 * 1000;
+  function p2(n){ return (n < 10 ? "0" : "") + n; }
+  var x = new Date(t);
+  return p2(x.getUTCMonth() + 1) + "-" + p2(x.getUTCDate()) + " "
+       + p2(x.getUTCHours()) + ":" + p2(x.getUTCMinutes()) + ":" + p2(x.getUTCSeconds());
+}
+
+/* 时间框下方的实时回显：显示实际要发走的 12 位 BCD，非法时直接说哪一位不对 */
+function syncFenceTime(){
+  var pairs = [["fT1v", "fT1"], ["fT2v", "fT2"]];
+  for (var i = 0; i < pairs.length; i++) {
+    var el = $(pairs[i][0]);
+    var inp = $(pairs[i][1]);
+    if (!el || !inp) continue;
+    var d = fenceTimeBcd(inp.value);
+    var e = bcdTimeErr(d);
+    if (d === "000000000000") {
+      el.className = "tv bad";
+      el.textContent = "全 0 = 永不报警（只认 00:00:00 一秒）";
+    } else if (e) {
+      el.className = "tv bad"; el.textContent = "✕ " + e;
+    } else {
+      el.className = "tv ok";
+      el.textContent = "= " + d + "（BCD）｜按 UTC → 北京 " + bcdUtcToBj(d);
+    }
+  }
+  var nt = $("fTimeNote");
+  if (nt) nt.textContent = "设备按 UTC 判时（比北京时间少 8 小时）；过了结束时间不再报警。"
+                         + "不想限时段就别勾 bit0。";
+}
+
+/* 矩形 / 多边形：手工填点 与 按中心点+半径 两种方式互斥显示 */
+var FENCE_MODE = { rect:"manual", poly:"manual" };
+
+function setFenceMode(shape, mode){
+  FENCE_MODE[shape] = mode;
+  var wrap = $(shape === "rect" ? "fenceRect" : "fencePoly");
+  if (wrap && wrap.querySelectorAll) {
+    var btns = wrap.querySelectorAll(".modeseg button");
+    for (var i = 0; i < btns.length; i++) {
+      btns[i].classList.toggle("on", btns[i].getAttribute("data-mode") === mode);
+    }
+  }
+  $(shape === "rect" ? "rectManual" : "polyManual").style.display = mode === "manual" ? "" : "none";
+  $(shape === "rect" ? "rectCenter" : "polyCenter").style.display = mode === "center" ? "" : "none";
+}
+
+/* 读「中心纬度 / 中心经度 / 半径」三件套，非法时提示并返回 null */
+function geoFromCenter(idLat, idLon, idRadius){
+  var la = parseFloat($(idLat).value);
+  var lo = parseFloat($(idLon).value);
+  var rd = parseFloat($(idRadius).value);
+  if (!isFinite(la) || !isFinite(lo) || !isFinite(rd)) {
+    toast("中心纬度、中心经度、半径都要填数字");
+    return null;
+  }
+  if (Math.abs(la) > 90 || Math.abs(lo) > 180) {
+    toast("中心点需在 -90~90 度 / -180~180 度");
+    return null;
+  }
+  if (!(rd > 0)) { toast("半径需大于 0 米"); return null; }
+  if (Math.abs(Math.cos(la * Math.PI / 180)) < 1e-6) {
+    toast("中心点太靠极点，半径没法换算经度");
+    return null;
+  }
+  return { lat: la, lon: lo, radius: rd };
+}
+
+/* 矩形：中心点 + 半径（中心到边的距离）→ 自动填左上 / 右下两角 */
+function fillRectByCenter(){
+  var c = geoFromCenter("rFLat", "rFLon", "rFRadius");
+  if (!c) return;
+  var dLat = c.radius / 111320;
+  var dLon = c.radius / (111320 * Math.cos(c.lat * Math.PI / 180));
+  $("fLat1").value = degStr(Math.round((c.lat + dLat) * 1000000));
+  $("fLon1").value = degStr(Math.round((c.lon - dLon) * 1000000));
+  $("fLat2").value = degStr(Math.round((c.lat - dLat) * 1000000));
+  $("fLon2").value = degStr(Math.round((c.lon + dLon) * 1000000));
+  setFenceMode("rect", "manual");
+  refresh();
+  toast("已算出两角，切到手工模式可继续微调");
+}
+
+/* 多边形：中心点 + 半径 + 顶点数 → 正多边形顶点（从正北起，顺时针） */
+function fillPolyByCenter(){
+  var c = geoFromCenter("pFLat", "pFLon", "pFRadius");
+  if (!c) return;
+  var n = parseInt($("pFN").value, 10) || 6;
+  if (n < 3 || n > 10) { toast("顶点数需 3 ~ 10"); return; }
+  var latPerM = 1 / 111320;
+  var lonPerM = 1 / (111320 * Math.cos(c.lat * Math.PI / 180));
+  var lines = [];
+  for (var i = 0; i < n; i++) {
+    var th = (90 - i * 360 / n) * Math.PI / 180;   /* 第 0 个点指向正北，其余顺时针 */
+    lines.push(degStr(Math.round((c.lat + c.radius * Math.sin(th) * latPerM) * 1000000)) + "," +
+               degStr(Math.round((c.lon + c.radius * Math.cos(th) * lonPerM) * 1000000)));
+  }
+  $("fPts").value = lines.join("\n");
+  setFenceMode("poly", "manual");
+  refresh();
+  toast("已生成 " + n + " 个顶点，切到手工模式可继续微调");
+}
+
+/* ============================================================
+ * 电子围栏地图绘制 —— 与平台共用 shared/jt808_map.js
+ *   MAP_FENCES 存 WGS84 图形；绘图方式可画多个，报文由 collectFence() 读 items。
+ *   手动输入方式保持原来的数字表单，清空 MAP_FENCES 即可切换回来。
+ * ============================================================ */
+var MAP_FENCES = [];       /* 地图上画的围栏（WGS84） */
+var MAP_SEQ = 0;
+var MAPM = null;           /* 地图实例，首次打开弹窗时才创建 */
+
+function fmt6(v){ return (Math.round(Number(v) * 1000000) / 1000000).toFixed(6); }
+function shapeCn(s){ return s === "circle" ? "圆形" : s === "rect" ? "矩形" : "多边形"; }
+
+function syncFenceInfo(){
+  var el = $("fenceMapInfo");
+  if (!el) return;
+  var info = FENCE_INFO[STATE.type];
+  if (!info || !info.set) { el.textContent = "删除类报文不需要绘图"; return; }
+  var total = MAP_FENCES.length;
+  if (!total) { el.textContent = "未画图形：按下方输入框手工组包"; return; }
+  var n = 0;
+  for (var i = 0; i < total; i++) if (MAP_FENCES[i].shape === info.shape) n++;
+  var txt = "已画 " + total + " 个围栏，当前 0x" + STATE.type + " 可用 " + n + " 个";
+  if (info.shape !== "poly" && n > 10) txt += "（单帧最多 10 个，请分批下发）";
+  if (info.shape === "poly" && n > 1) txt += "（0x8604 一帧只能带 1 个，请分批）";
+  if (n === 0) txt += "（形状不匹配，请画" + shapeCn(info.shape) + "）";
+  el.textContent = txt;
+}
+
+function renderMapFences(){
+  if (MAPM) MAPM.renderShapes(MAP_FENCES);
+  var box = $("mapFenceList");
+  if (!box) return;
+  if (!MAP_FENCES.length) { box.innerHTML = '<span class="note">还没画围栏</span>'; return; }
+  box.innerHTML = MAP_FENCES.map(function (f, i) {
+    return '<span class="fchip">' + (i + 1) + ' · ' + shapeCn(f.shape)
+      + (f.radius ? ' · ' + f.radius + 'm' : '')
+      + ' <b data-del="' + i + '" title="删除">✕</b></span>';
+  }).join("");
+  var dels = box.querySelectorAll("[data-del]");
+  for (var k = 0; k < dels.length; k++) {
+    dels[k].addEventListener("click", function () {
+      MAP_FENCES.splice(Number(this.getAttribute("data-del")), 1);
+      renderMapFences(); syncFenceInfo(); refresh();
+    });
+  }
+}
+
+/* 地图图形 → 当前报文类型可用的区域项（其余形状忽略） */
+function mapFenceItems(info){
+  var out = [], base = parseInt($("fId").value, 10);
+  if (!(base >= 1)) base = 1;
+  for (var i = 0; i < MAP_FENCES.length; i++) {
+    var f = MAP_FENCES[i];
+    if (f.shape !== info.shape) continue;
+    var it = { shape: info.shape, id: base + out.length };
+    if (info.shape === "circle") {
+      it.lat = f.points[0][0]; it.lon = f.points[0][1]; it.radius = f.radius;
+    } else if (info.shape === "rect") {
+      var p1 = f.points[0], p2 = f.points[1];
+      it.lat1 = Math.max(p1[0], p2[0]); it.lon1 = Math.min(p1[1], p2[1]);
+      it.lat2 = Math.min(p1[0], p2[0]); it.lon2 = Math.max(p1[1], p2[1]);
+    } else {
+      it.points = f.points;
+    }
+    out.push(it);
+  }
+  return out;
+}
+
+/* 第 1 个围栏回填数字输入框，方便对照；报文仍按全部 items 组包 */
+function fillInputsFromMap(items, info){
+  if (!items.length) return;
+  var f = items[0];
+  if (info.shape === "circle") {
+    $("fLat").value = fmt6(f.lat); $("fLon").value = fmt6(f.lon);
+    $("fRadius").value = String(f.radius);
+  } else if (info.shape === "rect") {
+    $("fLat1").value = fmt6(f.lat1); $("fLon1").value = fmt6(f.lon1);
+    $("fLat2").value = fmt6(f.lat2); $("fLon2").value = fmt6(f.lon2);
+  } else {
+    $("fPts").value = (f.points || []).map(function (p) {
+      return fmt6(p[0]) + "," + fmt6(p[1]);
+    }).join("\n");
+  }
+  syncFenceTime();
+}
+
+function addMapFence(f){
+  MAP_FENCES.push({
+    id: ++MAP_SEQ,
+    shape: f.shape === "polygon" ? "poly" : f.shape,
+    points: f.points,
+    radius: f.radius || 0
+  });
+  renderMapFences(); syncFenceInfo(); refresh();
+  toast("已添加围栏，共 " + MAP_FENCES.length + " 个");
+}
+
+function openFenceModeDlg(){ $("dlgMode").classList.add("show"); }
+function closeFenceModeDlg(){ $("dlgMode").classList.remove("show"); }
+function closeMapDlg(){ $("dlgMap").classList.remove("show"); }
+
+function openMapDlg(){
+  closeFenceModeDlg();
+  $("dlgMap").classList.add("show");
+  if (MAPM) { setTimeout(function () { MAPM.invalidate(); renderMapFences(); }, 50); return; }
+  if (typeof L === "undefined" || typeof JT808Map === "undefined") {
+    $("mapHint").textContent = "地图组件没加载：确认 vendor/leaflet.js 与 shared/jt808_map.js 存在";
+    return;
+  }
+  try {
+    MAPM = JT808Map.create({
+      el: "fenceMap", tipEl: "mapTipDraw", hintEl: "mapHint",
+      buttons: { circle:"dCircle", rect:"dRect", poly:"dPoly", stop:"dStop" },
+      search: { input:"#dSrch", result:"#dSrchRes", clear:"#dSrchClr" },
+      onAdd: addMapFence,
+      toast: function (m) { toast(m); }
+    });
+  } catch (e) {
+    $("mapHint").textContent = "地图初始化失败：" + e.message;
+    return;
+  }
+  setTimeout(function () { MAPM.invalidate(); renderMapFences(); }, 50);
+}
+
+function bindMapDlg(){
+  $("btnFenceDraw").addEventListener("click", openFenceModeDlg);
+  $("btnFenceClear").addEventListener("click", function () {
+    MAP_FENCES = []; renderMapFences(); syncFenceInfo(); refresh();
+    toast("已清空地图图形，回到手动输入");
+  });
+  $("modeX").addEventListener("click", closeFenceModeDlg);
+  $("modeMask").addEventListener("click", closeFenceModeDlg);
+  $("modeDraw").addEventListener("click", openMapDlg);
+  $("modeManual").addEventListener("click", function () {
+    closeFenceModeDlg();
+    MAP_FENCES = []; renderMapFences(); syncFenceInfo(); refresh();
+    toast("已切到手动输入方式，按下方输入框填坐标");
+  });
+  $("mapX").addEventListener("click", closeMapDlg);
+  $("mapMask").addEventListener("click", closeMapDlg);
+  $("dCancel").addEventListener("click", closeMapDlg);
+  $("dClearAll").addEventListener("click", function () {
+    MAP_FENCES = []; renderMapFences(); syncFenceInfo(); refresh();
+  });
+  $("dFit").addEventListener("click", function () {
+    if (MAPM && MAPM.fitFences(MAP_FENCES)) return;
+    toast("还没有围栏可定位");
+  });
+  $("dCircle").addEventListener("click", function () {
+    if (MAPM) MAPM.setDrawMode(MAPM.getDrawMode() === "circle" ? null : "circle");
+  });
+  $("dRect").addEventListener("click", function () {
+    if (MAPM) MAPM.setDrawMode(MAPM.getDrawMode() === "rect" ? null : "rect");
+  });
+  $("dPoly").addEventListener("click", function () {
+    if (!MAPM) return;
+    if (MAPM.getDrawMode() === "polygon" && MAPM.getPolyPts().length >= 3) { MAPM.finishPolygon(); return; }
+    MAPM.setDrawMode(MAPM.getDrawMode() === "polygon" ? null : "polygon");
+  });
+  $("dStop").addEventListener("click", function () {
+    if (!MAPM) return;
+    if (MAPM.getDrawMode() === "polygon" && MAPM.getPolyPts().length >= 3) MAPM.finishPolygon();
+    else MAPM.setDrawMode(null);
+  });
+  $("dApply").addEventListener("click", function () {
+    var info = FENCE_INFO[STATE.type];
+    if (!info || !info.set) { toast("当前是删除类报文，不需要回填图形"); closeMapDlg(); return; }
+    var items = mapFenceItems(info);
+    if (!items.length) { toast("还没有画出当前形状（" + shapeCn(info.shape) + "）的围栏"); return; }
+    fillInputsFromMap(items, info);
+    closeMapDlg();
+    syncFenceInfo();
+    refresh();
+    toast("已回填第 1 个围栏；报文按 " + items.length + " 个" + shapeCn(info.shape) + "区域组包");
+  });
+  document.addEventListener("keydown", function (e) {
+    if (e.key !== "Escape") return;
+    if ($("dlgMap").classList.contains("show")) closeMapDlg();
+    else if ($("dlgMode").classList.contains("show")) closeFenceModeDlg();
+  });
+}
+
+function bindFence(){
+  var fields = ["fId","fT1","fT2","fSpd","fSpdDur","fLat","fLon","fRadius",
+                "fLat1","fLon1","fLat2","fLon2","fPts","fIds"];
+  for (var i = 0; i < fields.length; i++) {
+    var el = $(fields[i]);
+    if (el) el.addEventListener("input", refresh);
+  }
+  $("fT1").addEventListener("input", syncFenceTime);
+  $("fT2").addEventListener("input", syncFenceTime);
+  /* 「清空」按钮：清掉时间框，报文里按 12 个 0 发（设备只认 00:00:00 一秒，等于不报警） */
+  var clrs = document.querySelectorAll("[data-clr]");
+  for (var k = 0; k < clrs.length; k++) {
+    clrs[k].addEventListener("click", function(){
+      var t = $(this.getAttribute("data-clr"));
+      if (t) t.value = "";
+      syncFenceTime();
+      refresh();
+    });
+  }
+  $("fOp").addEventListener("change", refresh);
+  /* 中心点 + 半径 → 自动算出各点，填进上面的点输入框（填完仍可手工微调） */
+  $("btnRectFill").addEventListener("click", fillRectByCenter);
+  $("btnPolyFill").addEventListener("click", fillPolyByCenter);
+  /* 两种填法切换 */
+  var mbtns = document.querySelectorAll(".modeseg button");
+  for (var b = 0; b < mbtns.length; b++) {
+    mbtns[b].addEventListener("click", function(){
+      setFenceMode(this.getAttribute("data-shape"), this.getAttribute("data-mode"));
+    });
+  }
+  var props = ["fPTime","fPSpeed","fPIn","fPOut"];
+  for (var j = 0; j < props.length; j++) {
+    $(props[j]).addEventListener("change", function(){ syncFence(); refresh(); });
+  }
+  syncFenceTime();
+  setFenceMode("rect", FENCE_MODE.rect);
+  setFenceMode("poly", FENCE_MODE.poly);
+  bindMapDlg();
+  syncFenceInfo();
+}
+
+/* 渲染着色报文 */
+function paint(frameObj){
+  var f = frameObj.frame, hd = frameObj.header, bd = frameObj.body;
+  var parts = [];
+  parts.push('<span class="f">' + hex2(f[0]) + '</span> ');
+  /* 转义后头部长可能与原始头部长度不同，逐字节映射回类别 */
+  var hdSet = hd.slice(), bdSet = bd.slice(), k = 1;
+  var out = [];
+  while (k < f.length - 1) {
+    var b = f[k], width = 1;
+    if (b === ESC) width = 2;
+    var cls;
+    if (hdSet.length > 0)      cls = "h";
+    else if (bdSet.length > 0) cls = "b";
+    else                       cls = "k";
+    /* 消耗原始字节 */
+    if (hdSet.length > 0) hdSet.shift();
+    else if (bdSet.length > 0) bdSet.shift();
+    var seg = f.slice(k, k + width).map(hex2).join(" ");
+    out.push('<span class="' + cls + '">' + seg + '</span>');
+    k += width;
+  }
+  parts.push(out.join(" "));
+  parts.push(' <span class="f">' + hex2(f[f.length - 1]) + '</span>');
+  return parts.join("");
+}
+
+/* ============================================================
+ * 主刷新
+ * ============================================================ */
+function refresh(){
+  /* --- 设备标识 --- */
+  var idRes = identToBcd($("ident").value);
+  var bcdBox = $("bcdBox");
+  if (!String($("ident").value).trim()) {
+    bcdBox.innerHTML = '输入 IMSI 后这里显示实际写入报文的 BCD 字节';
+    $("ident").classList.remove("bad");
+  } else if (!idRes.ok) {
+    bcdBox.innerHTML = '<span class="err">' + idRes.err + '</span>';
+    $("ident").classList.add("bad");
+  } else {
+    $("ident").classList.remove("bad");
+    bcdBox.innerHTML = 'BCD[6] = <code>' + toHex(idRes.bcd) + '</code>　'
+                     + '（' + (idRes.trimmed
+                         ? idRes.origLen + ' 位 IMSI 取后 12 位 → ' + idRes.d
+                         : '12 位原样 → ' + idRes.d) + '）';
+  }
+
+  var out = $("out"), meta = $("meta"), omsg = $("omsg");
+  out.innerHTML = '<span class="empty">等待输入…</span>';
+  meta.innerHTML = "";
+  omsg.classList.remove("show");
+
+  /* 先清空可发送内容：任何校验失败都不能留着上一帧去发送 */
+  out._frameObj = null;
+  out._hex = out._hexNoSpace = out._raw = out._rawNoSpace = "";
+  out._imei = null;
+  out._msgId = null;
+  $("copied").innerHTML = "";
+  $("copied").classList.remove("show");
+  $("sendRes").innerHTML = "";
+  $("sendRes").classList.remove("show");
+
+  var errs = [];
+  if (idRes.err) errs.push(idRes.err);
+
+  var seq = parseInt($("seq").value, 10);
+  if (!(seq >= 0 && seq <= 0xFFFF)) errs.push("流水号需在 0~65535");
+
+  if (errs.length) {
+    showMsg(errs);
+    syncSendBox();
+    return;
+  }
+
+  /* --- 按类型组包 --- */
+  var msgId, body = null;
+  try {
+    if (STATE.type === "8103") {
+      var r3 = collect8103();
+      errs = errs.concat(r3.errs);
+      if (r3.items.length === 0 && r3.errs.length === 0) errs.push("请至少勾选一个要设置的参数");
+      if (errs.length) { showMsg(errs); syncSendBox(); return; }
+      body = build8103Body(r3.items);
+      msgId = 0x8103;
+    } else if (STATE.type === "8104") {
+      msgId = 0x8104;
+      body = [];
+    } else if (STATE.type === "8106") {
+      var r6 = collect8106();
+      errs = errs.concat(r6.errs);
+      if (errs.length) { showMsg(errs); syncSendBox(); return; }
+      body = build8106Body(r6.ids);
+      msgId = 0x8106;
+    } else if (STATE.type === "8105") {
+      var cw = parseInt($("cWord").value, 10);
+      var cp = $("cParam").value;
+      /* 命令字 2 带命令参数串（字段定义见卡片下方格式说明）；3/4/5 无参数。
+       * 命令字 1/0xF0（MCU/Modem 升级）由 FOTA 平台主动下发，工具不提供生成 */
+      try {
+        body = build8105Body(cw, cp);
+      } catch (ex) {
+        showMsg([ "命令参数：" + ex.message ]);
+        syncSendBox();
+        return;
+      }
+      msgId = 0x8105;
+    } else if (fenceOn(STATE.type)) {
+      var rf = collectFence();
+      errs = errs.concat(rf.errs);
+      if (rf.errs.length) { showMsg(errs); syncSendBox(); return; }
+      body = rf.body;
+      msgId = parseInt(STATE.type, 16);
+    }
+
+    if (body === null) { syncSendBox(); return; }
+    var fo = buildFrame(msgId, idRes.bcd, seq, body);
+
+    out.innerHTML = paint(fo);
+    /* 统计行：条目用「·」分隔，数值加粗，长度统一带 Byte */
+    var metaBits = [
+      ["总长", fo.frame.length + " Byte"],
+      ["未转义", fo.raw.length + " Byte"],
+      ["消息体", fo.body.length + " Byte"],
+      ["校验码", "0x" + hex2(fo.cs)],
+      ["消息 ID", "0x" + hex4(msgId)]
+    ];
+    meta.innerHTML = metaBits.map(function(p){
+      return escapeHtml(p[0]) + "：<b>" + escapeHtml(p[1]) + "</b>";
+    }).join(' <i>·</i> ');
+    $("copied").innerHTML = "";
+    $("copied").classList.remove("show");
+
+    $("outHint").textContent = "0x" + hex4(msgId) + " " + (MSG_NAME[hex4(msgId)] || "");
+    $("out")._frame = fo;
+    $("out")._hex = toHex(fo.frame);                    /* 带空格（给人看） */
+    $("out")._hexNoSpace = toHex(fo.frame, "");          /* 无空格（给工具吃） */
+    $("out")._raw = toHex(fo.raw);
+    $("out")._rawNoSpace = toHex(fo.raw, "");
+    $("out")._frameObj = fo;
+    $("out")._imei = idRes.d;                            /* IMSI 后 12 位，发送用 */
+    $("out")._msgId = msgId;
+    showMsg([]);
+    syncSendBox();
+  } catch (ex) {
+    $("out").innerHTML = '<span class="empty">组包失败：' + ex.message + '</span>';
+    showMsg([ex.message]);
+    syncSendBox();
+  }
+}
+
+/* ============================================================
+ * 发送到平台（POST /client/sendRaw）
+ *   请求: { "imei": "<IMSI 后 12 位>", "cmd": "<无空格 7E…7E 报文>" }
+ *   应答: { "code": 200, "data": { "flowId": "119" }, "message": "成功" }
+ * ============================================================ */
+var SEND_DEFAULT_URL = "http://10.85.40.3:1813/client/sendRaw";
+
+/* ---------- 桌面版（exe）模式 ----------
+ * 桌面外壳启动本地服务并注入 window.__JT808_DESKTOP__，页面从 127.0.0.1 加载，
+ * 于是所有跨域 POST 都改走同源 /__proxy 由本地服务转发，彻底绕开 CORS 预检。
+ * 直接用浏览器打开 index.html 时该对象不存在，行为与原来完全一致。
+ */
+function isDesktop(){
+  return !!(window.__JT808_DESKTOP__ && window.__JT808_DESKTOP__.enabled);
+}
+function desktopPlatform(){
+  return (window.__JT808_DESKTOP__ || {}).platform || "";
+}
+/* 跨域绝对地址 → 同源代理地址；同源/相对地址原样返回 */
+function viaDesktop(url){
+  if (!isDesktop()) return url;
+  try {
+    var u = new URL(url, location.href);
+    if (u.host === location.host) return url;
+    return "/__proxy?u=" + encodeURIComponent(u.href);
+  } catch (e) { return url; }
+}
+
+/* ---------- 运行方式 ----------
+ * desktop：双击 exe，页面由本机服务提供，发送走同源 /__proxy，一定发得出去
+ * file   ：双击 index.html（file://），浏览器跨域会把 POST 拦掉，必然发不出去
+ * http   ：被放到某个 web 服务下，取决于该服务是否给了跨域头
+ */
+function runMode(){
+  if (isDesktop()) return "desktop";
+  try { if (location.protocol === "file:") return "file"; } catch (e) {}
+  return "http";
+}
+
+/* ---------- 网页版自愈：自动接上本机已启动的 exe ----------
+ * exe 起的本地服务对 /health 回 Access-Control-Allow-Origin:*，
+ * 所以即使用 file:// 打开本页也能探到它。探到就整页跳过去，
+ * 跳过去之后就是 desktop 模式：同源 /__proxy 转发，CORS、OPTIONS 预检、
+ * 本地中转脚本全部不再需要。
+ *
+ * 目的：用户双击 index.html 也能直接用，不用记任何命令。
+ */
+var SHELL_PORTS = [18099, 18100, 18101, 18102, 18103, 18104, 18105];
+
+/* 发送闸门：只有确认「发得出去」时才让点发送按钮，避免用户点了才发现是死路 */
+var SEND_READY = { open: true, why: "" };
+function setSendReady(open, why){
+  SEND_READY.open = !!open;
+  SEND_READY.why = why || "";
+  syncSendBox();
+}
+
+function probeShell(port, timeoutMs){
+  return new Promise(function(resolve){
+    var ctrl = null, timer = null, done = false;
+    function fin(v){
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve(v);
+    }
+    try {
+      if (window.AbortController) { ctrl = new AbortController(); }
+      timer = setTimeout(function(){
+        if (ctrl) { try { ctrl.abort(); } catch (e) {} }
+        fin(null);
+      }, timeoutMs || 900);
+      fetch("http://127.0.0.1:" + port + "/health", {
+        cache: "no-store", signal: ctrl ? ctrl.signal : undefined
+      }).then(function(r){
+        return r.text().then(function(t){ return { ok: r.ok, t: t }; });
+      }).then(function(r){
+        var o = null;
+        try { o = JSON.parse(r.t); } catch (e) {}
+        fin((r.ok && o && o.app === "jt808-offline-tool") ? port : null);
+      }).catch(function(){ fin(null); });
+    } catch (e) { fin(null); }
+  });
+}
+
+/* manual=true：用户点了「重新检测」，失败要弹提示，不能静默 */
+function bootstrapShell(manual){
+  if (isDesktop()) { setSendReady(true, ""); paintRunbar(); return; }
+  paintRunbar(true);
+  var found = null;
+  var jobs = SHELL_PORTS.map(function(p){
+    return probeShell(p).then(function(hit){ if (hit && !found) { found = hit; } });
+  });
+  Promise.all(jobs).then(function(){
+    if (found) {
+      location.replace("http://127.0.0.1:" + found + "/");
+      return;
+    }
+    paintRunbar(false);
+    probeRelay();
+    if (manual) toast("没找到本机工具，请先双击 JT808离线工具.exe");
+  });
+}
+
+/* ---------- 桌面版存活监测 ----------
+ * 外壳服务随窗口进程存活：最小化、系统休眠都不退出，只有关闭窗口才退出
+ * （jt808_desktop.py 的 watchdog）。页面每 5s 探一次 /__ping，
+ * 连续 3 次没应答就认定服务已停：明说原因 + 禁用发送按钮，
+ * 不再让用户点了发送才看到一堆跨域术语。服务恢复后自动解除。
+ */
+var DESK_MISS = 0;
+function deskDead(dead){
+  var el = $("runbar");
+  if (dead) {
+    setSendReady(false, "本机工具服务已停止，请重新双击 JT808离线工具.exe");
+    if (el) {
+      el.style.display = "";
+      el.innerHTML = '<b>本机工具服务已停止 —— 工具窗口已被关闭或进程被结束。</b>'
+        + '　双击 <code>JT808离线工具.exe</code> 重新打开即可，本页检测到后会自动恢复。'
+        + '<span class="x" id="rbRevive">我已重新启动，立即恢复</span>';
+      var b = $("rbRevive");
+      if (b) {
+        b.addEventListener("click", function(){
+          fetch("/__ping", { cache: "no-store" })
+            .then(function(){ location.reload(); })
+            .catch(function(){ toast("还是没探到，确认 exe 窗口已经打开了？"); });
+        });
+      }
+    }
+  } else {
+    setSendReady(true, "");
+    if (el && runMode() === "desktop") { el.style.display = "none"; }
+  }
+}
+function watchDesktop(){
+  if (!isDesktop()) return;
+  setInterval(function(){
+    fetch("/__ping", { cache: "no-store" })
+      .then(function(){ DESK_MISS = 0; deskDead(false); })
+      .catch(function(){ DESK_MISS += 1; if (DESK_MISS >= 3) { deskDead(true); } });
+  }, 5000);
+}
+
+function paintRunbar(busy){
+  var el = $("runbar");
+  if (!el) return;
+  if (runMode() === "desktop") { el.style.display = "none"; return; }
+  el.style.display = "";
+  if (busy) {
+    el.innerHTML = "<b>正在查找本机已启动的 JT808离线工具…</b>";
+    return;
+  }
+  el.innerHTML = '<b>这个页面在浏览器里跑，发不出报文：'
+    + '发 POST 前浏览器要先发 OPTIONS 预检，平台没回允许跨域的响应头，请求直接被拦掉，报文根本没离开这台机器。</b>'
+    + '　解决办法只有一步 —— 双击同目录的 <code>JT808离线工具.exe</code>，'
+    + '它自带同源转发，从根上不经过跨域检查，也不需要起任何中转脚本。'
+    + '本页会自动发现它并跳过去。'
+    + '<span class="x" id="rbRecheck">我已启动，重新检测</span>';
+  var b = $("rbRecheck");
+  if (b) {
+    b.addEventListener("click", function(){ bootstrapShell(true); });
+  }
+}
+
+/* 当前要发的内容；没生成好就返回 null */
+function buildSendPayload(){
+  var imei = $("out")._imei, cmd = $("out")._hexNoSpace;
+  if (!imei || !cmd) return null;
+  return { imei: imei, cmd: cmd };
+}
+
+/* 生成结果变化时同步预览与按钮可用态 */
+function syncSendBox(){
+  var p = buildSendPayload();
+  $("plImei").textContent = p ? p.imei : "—";
+  $("plCmd").textContent  = p ? p.cmd  : "—";
+  /* 没内容、或当前形态确认发不出去，都不让点 —— 别让用户点了才看到死路 */
+  var gate = (typeof SEND_READY === "undefined") ? true : SEND_READY.open;
+  $("btnSend").disabled = !p || !gate;
+  $("btnSend").title = gate ? "" : (SEND_READY.why || "");
+}
+
+/* 桌面版默认发送地址：由外壳的 config.json / 命令行决定 */
+function desktopSendUrl(){
+  var p = desktopPlatform().replace(/\/+$/, "");
+  if (!p) return "";
+  return /\/client\//i.test(p) ? p : p + "/client/sendRaw";
+}
+
+function srUrl(){
+  var u = String($("srvUrl").value || "").trim();
+  if (u) return u;
+  if (isDesktop() && desktopSendUrl()) return desktopSendUrl();
+  return SEND_DEFAULT_URL;
+}
+function srTimeoutMs(){
+  var s = parseFloat($("srvTmo").value);
+  if (!(s > 0)) s = 10;
+  return Math.min(s, 120) * 1000;
+}
+
+/* ---------- 弹窗 ---------- */
+function showModal(kind, title, bodyHtml){
+  var box = $("mbox");
+  box.className = "mbox " + kind;
+  $("mIcon").textContent = kind === "ok" ? "✓" : (kind === "err" ? "✕" : "!");
+  $("mTitle").textContent = title;
+  $("mBody").innerHTML = bodyHtml;
+  $("modal").classList.add("show");
+}
+function hideModal(){ $("modal").classList.remove("show"); }
+
+/* ---------- 结果区（弹窗关掉后还能回看） ---------- */
+function showSendRes(kind, title, detail){
+  var el = $("sendRes");
+  el.innerHTML = '<div class="sr ' + kind + '">'
+    + '<div class="srt">' + escapeHtml(title) + '</div>'
+    + (detail ? '<div class="srd">' + escapeHtml(detail) + '</div>' : '')
+    + '</div>';
+  el.classList.add("show");
+}
+
+/* 把服务端应答解读成 成功/失败 */
+function judgeResp(obj){
+  if (!obj || typeof obj !== "object") {
+    return { kind:"warn", title:"服务端返回了无法识别的内容", detail:String(obj) };
+  }
+  var code = obj.code;
+  var msg  = obj.message === undefined ? "" : String(obj.message);
+  var flow = (obj.data && obj.data.flowId !== undefined) ? String(obj.data.flowId) : "";
+  if (code === 200 || code === "200") {
+    return {
+      kind:"ok",
+      title:"下发成功" + (flow ? "，流水号 " + flow : ""),
+      detail: (msg || "服务端已受理")
+            + "\n\n注意：这只代表平台已把报文转发给设备，不等于设备执行成功。"
+            + "设备侧看固件日志的 0x0001 通用应答：result=0 才算受理。"
+    };
+  }
+  /* 平台在线但找不到这个 imei —— 说明网络和接口都通，是设备侧没注册/没连上 */
+  if (code === 2002 || /客户端不存在|不在线|离线|未上线|offline|not\s*online/i.test(msg)) {
+    return {
+      kind:"err",
+      title:"下发失败：平台找不到该设备" + (code !== undefined ? "（code " + code + "）" : ""),
+      detail: msg + "\n接口是通的，问题在设备侧：确认设备已开机、SIM 已注网、"
+            + "设备连的正是这个平台，并且 imei 与设备实际注册的一致。"
+    };
+  }
+  return {
+    kind:"err",
+    title:"下发失败" + (code !== undefined ? "（code " + code + "）" : ""),
+    detail: msg || JSON.stringify(obj)
+  };
+}
+
+/* 真正的发送流程
+ * 平台 /client/sendRaw 只认 application/json，而浏览器发 json 必先 OPTIONS 预检；
+ * 平台对 OPTIONS 只回 200 + Allow: POST,OPTIONS，不带任何 Access-Control-Allow-* 头
+ * —— 预检依然不通过，直连必被拦（实测 2026-11-04）。
+ * 所以：中转在跑就直接走中转；否则先试直连，失败再自动改走本地中转。
+ */
+var RELAY_DEFAULT_URL = "http://127.0.0.1:8099/client/sendRaw";
+
+/* 中转是否在跑（1.2s 内没答就算不在）；桌面版自带转发，不需要中转 */
+function relayAlive(){
+  return new Promise(function(resolve){
+    if (isDesktop()) { resolve(false); return; }
+    var health = RELAY_DEFAULT_URL.replace(/\/client\/sendRaw\s*$/i, "/health");
+    var ctrl = null, timer = null, done = false;
+    function fin(v){
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      resolve(v);
+    }
+    try {
+      if (window.AbortController) { ctrl = new AbortController(); }
+      timer = setTimeout(function(){ if (ctrl) { try { ctrl.abort(); } catch (e) {} } fin(false); }, 1200);
+      fetch(health, { method:"GET", signal: ctrl ? ctrl.signal : undefined })
+        .then(function(r){ return r.text().then(function(t){ return { ok:r.ok, t:t }; }); })
+        .then(function(r){
+          var o = null;
+          try { o = JSON.parse(r.t); } catch (e) {}
+          fin(!!(r.ok && o && o.ok));
+        }, function(){ fin(false); });
+    } catch (e) { fin(false); }
+  });
+}
+
+function isLocalUrl(u){
+  return /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?\//i.test(u);
+}
+
+/* 单次 POST，成功/失败都走 resolve，返回 {reached, status, ok, txt, netErr, timeout} */
+function postOnce(url, payload, timeoutMs){
+  var real = viaDesktop(url);
+  return new Promise(function(resolve){
+    var ctrl = null, timer = null, done = false;
+    function fin(r){
+      if (done) return;
+      done = true;
+      if (timer) clearTimeout(timer);
+      r.url = url;
+      resolve(r);
+    }
+    try {
+      if (window.AbortController) { ctrl = new AbortController(); }
+      timer = setTimeout(function(){
+        if (ctrl) { try { ctrl.abort(); } catch (e) {} }
+        fin({ reached:false, timeout:true, url:url });
+      }, timeoutMs);
+      fetch(real, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: ctrl ? ctrl.signal : undefined
+      }).then(function(res){
+        return res.text().then(function(txt){
+          fin({ reached:true, status:res.status, ok:res.ok, txt:txt, url:url });
+        });
+      }).catch(function(err){
+        fin({ reached:false, netErr:err, url:url });
+      });
+    } catch (ex) {
+      fin({ reached:false, netErr:ex, url:url });
+    }
+  });
+}
+
+function doSend(){
+  var p = buildSendPayload();
+  if (!p) { showModal("warn", "还没有可发送的报文", "请先在上方生成一条报文。"); return; }
+
+  var url = srUrl();
+  var sentVia = url;              /* 实际使用的地址：中转在跑时会改成中转地址 */
+  $("btnSend").disabled = true;
+  showSendRes("warn", "正在发送…", "POST " + url);
+
+  function finish(kind, title, detail){
+    $("btnSend").disabled = false;
+    showSendRes(kind, title, detail);
+    showModal(kind, title, detail
+      ? '<div>' + escapeHtml(detail) + '</div>'
+        + '<pre>' + escapeHtml('POST ' + sentVia + '\n\nimei = ' + p.imei + '\ncmd  = ' + p.cmd) + '</pre>'
+      : '');
+  }
+
+  function handle(r){
+    if (!r.reached) {
+      return false;
+    }
+    /* 桌面版：本地服务转发上游失败时回的是自家错误结构，单独说清楚 */
+    if (!r.ok && /"__proxy"/.test(r.txt || "")) {
+      var pe = null;
+      try { pe = JSON.parse(r.txt); } catch (e) {}
+      finish("err", "内置转发失败",
+        ((pe && pe.message) || r.txt || "").slice(0, 800));
+      return true;
+    }
+    if (!r.ok) {
+      finish("err", "平台返回 HTTP " + r.status, (r.txt || "").slice(0, 800) || "（无内容）");
+      return true;
+    }
+    var obj;
+    try { obj = JSON.parse(r.txt); }
+    catch (e) { finish("warn", "返回的不是 JSON", (r.txt || "").slice(0, 800)); return true; }
+    var j = judgeResp(obj);
+    finish(j.kind, j.title, j.detail);
+    return true;
+  }
+
+  var tmo = srTimeoutMs();
+
+  /* 中转在跑就直接走中转：跨域问题不存在，而且能看到平台真实状态码
+   * （浏览器直连时，平台的 403/401 和 CORS 缺头表现完全一样，都只是 Failed to fetch） */
+  if (!isDesktop() && !isLocalUrl(url)) {
+    relayAlive().then(function(on){
+      if (on) {
+        sentVia = RELAY_DEFAULT_URL;
+        showSendRes("warn", "本地中转已就绪，经中转发送…", "POST " + sentVia);
+        postOnce(sentVia, p, tmo).then(onResult);
+        return;
+      }
+      postOnce(url, p, tmo).then(onResult);
+    });
+  } else {
+    postOnce(url, p, tmo).then(onResult);
+  }
+
+  function onResult(r){
+    if (handle(r)) return;
+
+    /* 桌面版发不出去只有一种可能：本机服务没了（工具窗口被关闭、
+     * 或进程被结束）。/__proxy 是同源请求，不存在跨域，
+     * 不能再往 CORS 上引 —— 那是网页版直连才有的问题。 */
+    if (isDesktop()) {
+      finish("err", "本机工具服务已停止，报文没有发出去",
+        "工具窗口被关闭或进程被结束后，本地服务会退出。\n\n"
+        + "请重新双击 JT808离线工具.exe，新窗口打开后再点一次发送。");
+      return;
+    }
+
+    /* ---- 直连没打通：先判超时，再判是否被 CORS 拦 ---- */
+    if (r.timeout) {
+      finish("err", "发送超时",
+        "等 " + ($("srvTmo").value || "10") + " 秒没有任何响应。\n"
+        + "可能是：平台服务未启动 / 本机到 " + url.replace(/^https?:\/\//, "").replace(/\/.*$/, "")
+        + " 的防火墙没放通 / 报文发送后平台不回执。");
+      return;
+    }
+
+    var msg = r.netErr && r.netErr.message ? r.netErr.message : String(r.netErr);
+    var isNet = /Failed to fetch|NetworkError|Load failed|Network request failed/i.test(msg);
+
+    /* 已经是本地地址了，没法再兜 —— 只剩一种可能：本机工具没在跑 */
+    if (isLocalUrl(sentVia)) {
+      finish("err", "本机工具没在跑",
+        "连不上 " + sentVia + "。\n\n"
+        + "双击同目录的 JT808离线工具.exe，再点一次发送即可。");
+      return;
+    }
+
+    if (!isNet) { finish("err", "发送异常", msg); return; }
+
+    /* ---- 自动改走本地中转 ---- */
+    sentVia = RELAY_DEFAULT_URL;
+    showSendRes("warn", "直连没通，改用本地中转…",
+      "POST " + sentVia);
+
+    postOnce(RELAY_DEFAULT_URL, p, tmo).then(function(r2){
+      if (r2.reached) {
+        if (r2.ok) {
+          var o2 = null;
+          try { o2 = JSON.parse(r2.txt); } catch (e) {}
+          var j2 = o2 ? judgeResp(o2) : { kind:"warn", title:"中转返回的不是 JSON", detail:(r2.txt||"").slice(0,800) };
+          finish(j2.kind, j2.title + "（经本地中转）",
+            (j2.detail || "") + "\n\n——\n直连 " + url + " 没通（浏览器读不到跨域响应："
+            + "平台 OPTIONS 只回 200 + Allow 头，缺 Access-Control-Allow-Origin/Methods/Headers），"
+            + "本次报文是由 127.0.0.1:8099 中转发出的。");
+          return;
+        }
+        finish("err", "平台返回 HTTP " + r2.status + "（经本地中转）",
+          (r2.txt || "").slice(0, 800) || "（无内容）");
+        return;
+      }
+
+      /* 兜底：一句话讲清楚 + 一个可执行动作，不甩技术细节 */
+      finish("err", "这条报文没发出去",
+        "原因一句话：这个页面在浏览器里跑，浏览器发 POST 前要先过跨域预检，"
+        + "平台没回跨域头，请求被浏览器拦掉了，报文根本没离开这台机器。\n\n"
+        + "怎么办：双击同目录的 JT808离线工具.exe。"
+        + "它自带同源转发，从根上不经过跨域检查，也不需要起任何中转脚本。\n\n"
+        + "（Postman / curl 不走浏览器的跨域检查，所以手动发能成功 —— 但这不代表网页版能发。）");
+    });
+  }
+}
+
+/* 探测本地中转在不在，用于按钮旁的状态灯 */
+function probeRelay(){
+  var el = $("relayTip");
+  if (!el) return;
+  /* 桌面版自带转发，不存在 CORS 问题，灯常绿 */
+  if (isDesktop()) {
+    el.className = "rly on";
+    el.textContent = "内置转发已就绪";
+    el.title = "桌面版：报文经本机服务转发至 " + (desktopPlatform() || "平台") + "，无需任何跨域配置";
+    setSendReady(true, "");
+    return;
+  }
+  function miss(){
+    el.className = "rly off";
+    el.textContent = "未接本机工具，发不出去";
+    el.title = "双击同目录的 JT808离线工具.exe 即可，本页会自动跳过去";
+    setSendReady(false, "当前是网页预览模式，浏览器会拦掉这个 POST；请双击同目录的 JT808离线工具.exe");
+  }
+  var health = RELAY_DEFAULT_URL.replace(/\/client\/sendRaw\s*$/i, "/health");
+  var ctrl = null, timer = null;
+  try {
+    if (window.AbortController) { ctrl = new AbortController(); }
+    timer = setTimeout(function(){ if (ctrl) { try { ctrl.abort(); } catch (e) {} } }, 1500);
+    fetch(health, { method:"GET", signal: ctrl ? ctrl.signal : undefined })
+      .then(function(r){ return r.text().then(function(t){ return { ok:r.ok, t:t }; }); })
+      .then(function(r){
+        clearTimeout(timer);
+        var o = null;
+        try { o = JSON.parse(r.t); } catch (e) {}
+        if (r.ok && o && o.ok) {
+          el.className = "rly on";
+          el.textContent = "本地中转已就绪";
+          el.title = "转发至 " + (o.target || "");
+          setSendReady(true, "");
+          /* 横幅别停在"发不出去"上，和实际可用状态保持一致 */
+          var rb = $("runbar");
+          if (rb && !isDesktop()) {
+            rb.style.display = "";
+            rb.innerHTML = '<b>已连上本地中转（127.0.0.1:8099），报文会经它转发。</b>'
+              + '更省事的办法是双击同目录的 <code>JT808离线工具.exe</code>，本页会自动跳过去。';
+          }
+        } else {
+          miss();
+        }
+      }, function(){ clearTimeout(timer); miss(); });
+  } catch (e) {
+    if (timer) clearTimeout(timer);
+    miss();
+  }
+}
+
+function bindSend(){
+  /* 地址设置
+   * 注意：旧版本保存过 /client/send（1808）的，这里迁移到新的默认地址，
+   * 否则用户会以为「默认已经改好了」，实际还在用旧接口。
+   */
+  try {
+    var saved = JSON.parse(localStorage.getItem("jt808_send_cfg") || "null");
+    if (saved && saved.url) {
+      var oldUrl = String(saved.url);
+      var isStale = /:1808\/client\/send\s*$/i.test(oldUrl)
+                 || /\/client\/send\s*$/i.test(oldUrl);
+      if (isStale) {
+        saved.url = SEND_DEFAULT_URL;
+        try { localStorage.setItem("jt808_send_cfg", JSON.stringify(saved)); } catch (e2) {}
+      }
+      $("srvUrl").value = saved.url;
+    }
+    if (saved && saved.tmo) $("srvTmo").value = saved.tmo;
+  } catch (e) {}
+  $("srvUrlText").textContent = srUrl();
+
+  $("btnSrv").addEventListener("click", function(){
+    $("srvRow").classList.toggle("show");
+  });
+  $("btnSrvSave").addEventListener("click", function(){
+    var u = srUrl();
+    if (!/^https?:\/\//i.test(u)) { toast("地址需以 http:// 或 https:// 开头"); return; }
+    $("srvUrl").value = u;
+    $("srvUrlText").textContent = u;
+    $("srvRow").classList.remove("show");
+    try { localStorage.setItem("jt808_send_cfg", JSON.stringify({ url:u, tmo:$("srvTmo").value })); } catch (e) {}
+    toast("已保存发送地址");
+  });
+
+  $("btnSend").addEventListener("click", doSend);
+  probeRelay();
+
+  $("mClose").addEventListener("click", hideModal);
+  $("modal").addEventListener("click", function(e){
+    if (e.target === $("modal")) hideModal();
+  });
+  document.addEventListener("keydown", function(e){
+    if (e.key === "Escape") hideModal();
+  });
+}
+
+/* 全局剪贴板（navigator.clipboard 失败时回退 execCommand） */
+
+function copyToClipboard(txt, okMsg){
+  if (!txt) { toast("没有可复制的内容"); return; }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(txt).then(function(){
+      toast(okMsg);
+    }, function(){ fallbackCopy(txt, okMsg); });
+  } else {
+    fallbackCopy(txt, okMsg);
+  }
+}
+function fallbackCopy(txt, okMsg){
+  var ta = document.createElement("textarea");
+  ta.value = txt;
+  ta.style.position = "fixed";
+  ta.style.left = "-9999px";
+  document.body.appendChild(ta);
+  ta.select();
+  try { document.execCommand("copy"); toast(okMsg); }
+  catch (e) { toast("复制失败，请手动选中后复制"); }
+  document.body.removeChild(ta);
+}
+
+/* 错误提示容器：跟随当前分区，避免写进已被隐藏的卡片而看不见
+ *   0x8103 / 0x8106 → 参数配置卡（左）
+ *   其余类型       → 右栏生成结果卡（始终可见）
+ *   电子围栏额外在本卡内同步一份
+ */
+function showMsg(list){
+  var boxes = [ $("pmsg"), $("omsg"), $("fmsg") ];
+  var active = [ (STATE.type === "8103" || STATE.type === "8106") ? $("pmsg") : $("omsg") ];
+  if (fenceOn(STATE.type)) active.push($("fmsg"));
+
+  for (var i = 0; i < boxes.length; i++) {
+    var b = boxes[i];
+    if (!b || active.indexOf(b) >= 0) continue;
+    b.classList.remove("show");
+    b.textContent = "";
+  }
+  for (var j = 0; j < active.length; j++) {
+    if (!list || list.length === 0) {
+      active[j].classList.remove("show");
+      active[j].textContent = "";
+    } else {
+      active[j].classList.add("show");
+      active[j].textContent = "✕ " + list.join("；");
+    }
+  }
+}
+
+/* ============================================================
+ * 0x8105 命令参数格式（协议 8.13 表18 / 表19）
+ * ============================================================ */
+var CTRL_FIELDS_CONN = "连接控制;平台鉴权码;拨号点名称;拨号用户名;拨号密码;地址;TCP端口;UDP端口;连接到指定服务器时限";
+
+/* 示例模板：字段个数与顺序必须和上面一致，空字段靠连续分号占位 */
+var CTRL_TPL = {
+  2:   "0;AUTHCODE;cmnet;;;10.1.1.1;1808;;30"
+};
+
+/* 按命令字刷新"命令参数填写说明"与模板按钮显隐 */
+function syncCtrlFmt(){
+  var box = $("cFmtNote"), tplRow = $("cTplRow");
+  if (!box) return;
+  var cw = parseInt($("cWord").value, 10);
+  var mono = "font-family:var(--mono);color:var(--txt2);margin:3px 0 5px;word-break:break-all";
+  var html = "";
+
+  if (cw === 2) {
+    html = '<div>连接指定服务器参数：共 <b>9</b> 个字段，半角「;」分隔；无值的字段留空，但分隔符必须保留：</div>'
+         + '<div style="' + mono + '">' + CTRL_FIELDS_CONN + '</div>'
+         + '<div>· 连接控制 = 1：整串只填 <b>1</b>，其后不再有任何参数</div>'
+         + '<div>· 连接控制 = 0：其余字段按序填写</div>'
+         + '<div>· UDP 端口：本协议不使用 UDP，固定留空（占位分号不能省）</div>'
+         + '<div>· 连接到指定服务器时限：分钟</div>';
+  } else {
+    html = '<div>命令字 ' + cw + ' 无命令参数，留空即可。</div>';
+  }
+
+  box.innerHTML = html;
+  tplRow.style.display = (CTRL_TPL[cw] === undefined) ? "none" : "";
+}
+
+/* ============================================================
+ * 交互绑定
+ * ============================================================ */
+function bind(){
+  /* 报文类型 */
+  $("seg").addEventListener("click", function(e){
+    var btn = e.target.closest("button");
+    if (!btn) return;
+    var btns = $("seg").querySelectorAll("button");
+    for (var i = 0; i < btns.length; i++) btns[i].classList.remove("on");
+    btn.classList.add("on");
+    STATE.type = btn.dataset.t;
+
+    STATE.view = viewOfType(STATE.type);
+    markNav();
+    syncPageHead();
+    syncCards();
+    if (fenceOn(STATE.type)) syncFence();
+    $("paramHint").textContent = STATE.type === "8103" ? "勾选要下发的项"
+                              : STATE.type === "8106" ? "只勾 ID 即可，不需填值" : "";
+    refresh();
+  });
+
+  $("ident").addEventListener("input", refresh);
+  $("seq").addEventListener("input", refresh);
+  $("cWord").addEventListener("change", function(){ syncCtrlFmt(); refresh(); });
+  $("cParam").addEventListener("input", refresh);
+  $("btnCtrlTpl").addEventListener("click", function(){
+    var cw = parseInt($("cWord").value, 10);
+    if (CTRL_TPL[cw] === undefined) return;
+    $("cParam").value = CTRL_TPL[cw];
+    refresh();
+    toast("已填入示例模板，请逐项替换为实际参数");
+  });
+
+  $("btnSeq").addEventListener("click", function(){
+    var cur = parseInt($("seq").value, 10) || 0;
+    $("seq").value = (cur % 0xFFFF) + 1;
+    refresh();
+  });
+
+  /* 服务器快捷填 */
+  $("btnQuick").addEventListener("click", function(){
+    var host = $("qHost").value.trim();
+    var port = $("qPort").value.trim();
+    if (!host) { toast("先填服务器 IP 或域名"); return; }
+    if (!/^\d+$/.test(port)) { toast("端口需为数字"); return; }
+    setParamValue(0x0013, host, true);
+    setParamValue(0x0018, port, true);
+    refresh();
+    toast("已填入 0x0013 / 0x0018");
+  });
+  $("btnDefault").addEventListener("click", function(){
+    setParamValue(0x0013, "xatst.richlinkcloud.com", true);
+    setParamValue(0x0018, "1808", true);
+    refresh();
+    toast("已恢复默认服务器");
+  });
+
+  /* 复制 */
+  /* 复制：先把「带空格 / 无空格」两份都亮出来，再写剪贴板 */
+  function showCopied(hexSpace, hexTight){
+    var n = hexTight.length / 2;
+    $("copied").innerHTML =
+        '<div class="cp">'
+      +   '<div class="ch"><b>复制后待下发（无空格）</b><span class="len">' + n + ' Byte</span></div>'
+      +   '<div class="cv nowrap">' + escapeHtml(hexTight) + '</div>'
+      + '</div>'
+      + '<div class="cp">'
+      +   '<div class="ch"><b>对照（带空格）</b><span class="len">' + n + ' Byte</span></div>'
+      +   '<div class="cv">' + escapeHtml(hexSpace) + '</div>'
+      + '</div>';
+    $("copied").classList.add("show");
+  }
+
+  $("btnCopy").addEventListener("click", function(){
+    var hex = $("out")._hexNoSpace, sp = $("out")._hex;
+    if (!hex) { toast("还没有生成报文"); return; }
+    showCopied(sp, hex);
+    copyToClipboard(hex, "已复制 " + (hex.length / 2) + " 字节（无空格）");
+  });
+  $("btnCopySpace").addEventListener("click", function(){
+    var hex = $("out")._hexNoSpace, sp = $("out")._hex;
+    if (!sp) { toast("还没有生成报文"); return; }
+    showCopied(sp, hex);
+    copyToClipboard(sp, "已复制 " + (sp.split(" ").length) + " 字节（带空格）");
+  });
+
+  /* 反解 */
+  $("btnParse").addEventListener("click", function(){
+    var txt = $("rx").value;
+    if (!String(txt).trim()) { toast("先粘贴报文"); return; }
+    try {
+      var results = parseAll(txt);
+      renderParsed(results);
+      var n = results.length;
+      var okCnt = results.filter(function(r){ return !r.err; }).length;
+      $("rxHint").textContent = n > 1
+        ? ("共 " + n + " 帧，成功 " + okCnt + " 帧")
+        : ("第 1 帧，共 " + (results[0] ? results[0].hex.length / 2 : 0) + " 字节");
+      toast(n > 1 ? ("已解析 " + n + " 帧") : "解析完成");
+    } catch (ex) {
+      $("parsed").innerHTML = '<div style="color:#b52a2a;font-weight:600;padding:6px 0">解析失败：'
+                            + escapeHtml(ex.message) + '</div>';
+      $("parsed").classList.add("show");
+      $("rxHint").textContent = "解析失败";
+    }
+  });
+  $("btnClear").addEventListener("click", function(){
+    $("rx").value = "";
+    $("parsed").innerHTML = "";
+    $("parsed").classList.remove("show");
+    $("rxHint").textContent = "粘贴设备上行报文核对";
+  });
+
+  syncCtrlFmt();   /* 初始按默认命令字渲染命令参数格式说明 */
+}
+
+/* ============================================================
+ * 反解
+ *   splitFrames / parseOneFrame / parseAll 以及 50 种消息体解析器
+ *   全部在 ../shared/jt808_parser.js，与 jt808_tracker 平台共用同一份。
+ *   这里只保留渲染（DOM）和两张页面专用的常量表。
+ * ============================================================ */
+
+var ACK_RESULT_EN = {
+  0:"成功(Success)", 1:"失败(Failure)", 2:"消息有误(MessageError)",
+  3:"不支持(NotSupported)", 4:"报警处理确认(AlarmConfirm)"
+}
+
+var FENCE_PROP_BITS = [
+  [0x0001, "bit0 起止时间"], [0x0002, "bit1 限速"],
+  [0x0004, "bit2 进区域报警给驾驶员"], [0x0008, "bit3 进区域报警给平台"],
+  [0x0010, "bit4 出区域报警给驾驶员"], [0x0020, "bit5 出区域报警给平台"]
+];
+
+/* 读取属性扩展字段（时间 12 → 限速 3），返回新偏移；越界返回 -1 */
+
+/* 0x8600 圆形 / 0x8602 矩形：[操作1][区域总数1][项...] */
+
+/* 0x8604 多边形：ID4 + 属性2 (+时间12) (+限速3) + 顶点数2 + 顶点(纬4+经4)×n */
+
+/* 0x8601 / 0x8603 / 0x8605：[区域总数1][区域ID4 × n]，n=0 表示删除全部同类 */
+
+
+/* ---------- 6. 对外：解析整段文本（可多帧） ---------- */
+
+/* 把解析结果渲染进 #parsed，支持 JSON / 表格两种视图 */
+function renderParsed(results){
+  var multi = results.length > 1;
+  var html = "";
+
+  /* 视图切换 */
+  html += '<div class="viewTabs" id="vTabs">'
+       +    '<button data-v="json" class="on">JSON</button>'
+       +    '<button data-v="table">表格</button>'
+       +  '</div>';
+
+  var jsonHtml = "", tableHtml = "";
+  for (var i = 0; i < results.length; i++) {
+    var r = results[i];
+    var head = "";
+    if (multi) {
+      var tag;
+      if (r.err) tag = '<span class="ng">✕ 解析失败</span>';
+      else if (r.obj.__meta.csOk === true) tag = '<span class="ok">✓ 校验通过</span>';
+      else if (r.obj.__meta.csOk === false) tag = '<span class="ng">✕ 校验失败</span>';
+      else tag = '<span style="color:#828b98">— 未校验</span>';
+      head = '<div class="frameBar">'
+           +   '<span class="idx">第 ' + r.idx + ' 帧</span>'
+           +   '<span>' + r.hex.length / 2 + ' 字节</span>'
+           +   tag
+           +   '<button class="btn sm ghost cp" data-copy="' + r.idx + '">复制此帧</button>'
+           + '</div>';
+    }
+    if (r.err) {
+      jsonHtml += head + '<div class="jsonView" style="color:#b52a2a">✕ 解析失败：'
+                + escapeHtml(r.err) + '</div>';
+      tableHtml += head + '<table><tr><td colspan="2" class="errv">✕ 解析失败：'
+                 + escapeHtml(r.err) + '</td></tr></table>';
+    } else {
+      jsonHtml += head + '<div class="jsonView" data-json="' + r.idx + '">'
+                + jsonHighlight(r.obj, 0) + '</div>';
+      tableHtml += head + '<div data-table="' + r.idx + '">' + renderTable(r.obj) + '</div>';
+    }
+  }
+
+  html += '<div id="vJson">' + jsonHtml + '</div>';
+  html += '<div id="vTable" style="display:none">' + tableHtml + '</div>';
+
+  var el = $("parsed");
+  el.innerHTML = html;
+  el.classList.add("show");
+
+  /* 视图切换 */
+  var tabs = el.querySelector("#vTabs");
+  if (tabs) {
+    tabs.addEventListener("click", function(e){
+      var b = e.target.closest("button");
+      if (!b) return;
+      var bs = tabs.querySelectorAll("button");
+      for (var k = 0; k < bs.length; k++) bs[k].classList.remove("on");
+      b.classList.add("on");
+      $("vJson").style.display  = b.dataset.v === "json"  ? "" : "none";
+      $("vTable").style.display = b.dataset.v === "table" ? "" : "none";
+    });
+  }
+
+  /* 单帧复制 */
+  el.addEventListener("click", function(e){
+    var b = e.target.closest("button[data-copy]");
+    if (!b) return;
+    var idx = parseInt(b.dataset.copy, 10) - 1;
+    var target = results[idx];
+    if (!target) return;
+    copyToClipboard(target.hex.replace(/(..)/g, "$1 ").trim(), "已复制第 " + (idx + 1) + " 帧");
+  });
+}
+/* ============================================================
+ * 启动
+ * ============================================================ */
+renderParams();
+bind();
+bindFence();
+bindSend();
+bindNav();
+markNav();
+syncPageHead();
+syncCards();
+refresh();
+syncSendBox();
+
+/* 桌面版标识：标题追加后缀，地址行标注走内置转发 */
+if (isDesktop()) {
+  if (document.title.indexOf("桌面版") < 0) document.title += " · 桌面版";
+  var _st = $("srvUrlText");
+  if (_st) {
+    _st.textContent = srUrl() + "（内置转发）";
+    _st.title = "桌面版由本机服务转发，不经过浏览器跨域检查";
+  }
+}
+/* 网页版启动时先找本机 exe：找到就整页跳过去，用户什么都不用做 */
+bootstrapShell();
+/* 桌面版：盯着本机服务死没死，死了立刻明说，不装没事 */
+watchDesktop();
+</script>
+</body>
+</html>
