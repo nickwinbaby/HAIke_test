@@ -11,8 +11,8 @@ from datetime import datetime
 import requests
 import serial
 import serial.tools.list_ports
-from PyQt5.QtCore import QLibraryInfo, QRect, QThread, QTimer, QTranslator, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QTextCharFormat, QTextCursor
+from PyQt5.QtCore import QEvent, QLibraryInfo, QPoint, QRect, QThread, QTimer, QTranslator, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPixmap, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -45,10 +45,10 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-# PyInstaller --noconfirm --onefile --windowed --icon "bulid_photos/richlink_serial_tool.ico" --add-data "bulid_photos/richlink_serial_tool.ico;bulid_photos" "串口log过滤 - V19.0.py"
+# PyInstaller --noconfirm --onefile --windowed --icon "bulid_photos/richlink_serial_tool.ico" --add-data "bulid_photos/richlink_serial_tool.ico;bulid_photos" --add-data "bulid_photos/Mangetic.png;bulid_photos" "串口log过滤 - V19.0.py"
 
 version = "19.0"
-Compilation_date = "2026-10-27"
+Compilation_date = "2026-11-18"
 LOG_FILE_MAX_BYTES = 100 * 1024 * 1024
 LOG_FILE_SIZE_REFRESH_INTERVAL_MS = 60 * 1000
 LOG_FILE_FIRST_SIZE_REFRESH_DELAY_MS = 5 * 1000
@@ -72,6 +72,10 @@ LOG_AUTO_SCROLL_MARGIN = 2
 LOG_NORMAL_MAX_LINES = 3000
 LOG_READING_MAX_LINES = 20000
 LOG_MAX_CONFIGURABLE_LINES = 99999
+LOG_WATERMARK_WIDTH = 240
+LOG_WATERMARK_HEIGHT = 80
+LOG_WATERMARK_MARGIN = 14
+LOG_WATERMARK_OPACITY = 0.18
 CONFIG_CATEGORIES = (
     ("恢复出厂设置", "Factory Reset", (
         ("AT+RESETCONFIG", "恢复出厂设置", "Restore factory settings"),
@@ -757,7 +761,10 @@ class SerialPortTool(QWidget):
         self.load_fixed_at_commands()
 
     def initUI(self):
-        self.setWindowTitle("RichLink Serial Port Tool V" + version + " --GNN-20261027")
+        self.setWindowTitle(
+            "RichLink Serial Port Tool V" + version
+            + "    2026-11-18    ※瑞联内部工具，谢绝外发※    guomengyao@gosuncn.com"
+        )
         self.setWindowIcon(QIcon(resource_path("bulid_photos/richlink_serial_tool.ico")))
         self.setGeometry(420, 140, 1020, 720)
         self.setMinimumSize(860, 620)
@@ -1571,6 +1578,11 @@ class SerialPortTool(QWidget):
         left_layout.setSpacing(8)
         left_panel.setLayout(left_layout)
 
+        self.log_container = QWidget()
+        log_container_layout = QVBoxLayout(self.log_container)
+        log_container_layout.setContentsMargins(0, 0, 0, 0)
+        log_container_layout.setSpacing(0)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.document().setMaximumBlockCount(self.max_log_lines)
@@ -1578,7 +1590,9 @@ class SerialPortTool(QWidget):
         self.log_text.zoomIn = lambda *args, **kwargs: None
         self.log_text.zoomOut = lambda *args, **kwargs: None
         self.log_text.verticalScrollBar().valueChanged.connect(self.update_log_line_limit_for_scroll)
-        left_layout.addWidget(self.log_text, 1)
+        log_container_layout.addWidget(self.log_text)
+        left_layout.addWidget(self.log_container, 1)
+        self.setup_log_watermark()
 
         self.command_group = QGroupBox("AT Commands")
         command_layout = QVBoxLayout()
@@ -2035,7 +2049,7 @@ class SerialPortTool(QWidget):
     def show_modify(self):
         if self.language == "zh":
             modify_text = (
-                "V 19.0 --GNN-20261027\n"
+                "V 19.0 --GNN-20261118\n"
                 "1. 侧栏拆分为竖排 AT 和 CONFIG 两个入口，普通字重，分隔条与面板留白底色一致，互斥展开，使用相同宽度和拖动规则。\n"
                 "2. AT 保留原有命令和分组功能；切换面板时停止自动发送。\n"
                 "3. CONFIG 增加分类筛选及 37 个配置项，支持参数发送和查询，恢复出厂设置直接发送 AT+RESETCONFIG。\n"
@@ -2043,11 +2057,12 @@ class SerialPortTool(QWidget):
                 "5. CONFIG 使用描述（函数名）的紧凑布局，长文字可拖宽侧栏或悬停查看，恢复出厂设置的文字和发送按钮同一行显示。\n"
                 "6. CONFIG 参数为空或只有空格时，发送会弹窗提示并定位输入框；查询不要求填写参数。\n"
                 "7. CONFIG 序号垂直居中并按数字宽度占位，与文字间隔为 2px；切换分类保留本次输入。\n"
-                "8. 更新标题及版本记录日期为 2026-10-27，署名统一为 GNN。\n"
+                "8. 更新标题及版本记录日期为 2026-11-18，标题增加内部工具提示和联系邮箱。\n"
                 "9. 串口发送移至后台线程并增加 2 秒写入超时，移除可能无限等待的主线程 flush。\n"
                 "10. F102/F103 数据通道发送移至后台线程，服务器超时不再阻塞界面。\n"
                 "11. 发送超时或串口错误时停止自动发送、断开异常串口并显示错误。\n"
-                "12. RL-Data 请求失败只记录失败并继续自动发送，不再终止后续命令；进度分别统计成功和失败。\n\n"
+                "12. RL-Data 请求失败只记录失败并继续自动发送，不再终止后续命令；进度分别统计成功和失败。\n"
+                "13. 日志输出区右下角增加 Mangetic 半透明水印，尺寸约 240×80、不透明度 18%，窗口缩放时保持 14px 边距且鼠标事件穿透。\n\n"
                 "V 10.0\n"
                 "1. 优化长时间日志显示和串口读取缓存压力。\n"
                 "2. 完善基础日志过滤、保存和串口命令发送流程。\n"
@@ -2106,7 +2121,7 @@ class SerialPortTool(QWidget):
             )
         else:
             modify_text = (
-                "V 19.0 --GNN-20261027\n"
+                "V 19.0 --GNN-20261118\n"
                 "1. Add mutually exclusive AT and CONFIG side panels with matching width and resize behavior.\n"
                 "2. Keep the original AT controls. Use normal-weight vertical labels and a divider matching the panel background; stop auto send when switching panels.\n"
                 "3. Add category filtering and 37 CONFIG entries with value sending and queries; factory reset sends AT+RESETCONFIG directly.\n"
@@ -2114,11 +2129,12 @@ class SerialPortTool(QWidget):
                 "5. Use compact description (function) labels; widen the sidebar or hover for long text. Show factory reset and its Send button on one line.\n"
                 "6. Show a warning and focus the input when a sent value is empty or whitespace; queries do not require a value.\n"
                 "7. Center row numbers vertically, size them to their digits, and leave a 2px text gap. Retain session inputs when changing categories.\n"
-                "8. Update title and release date to 2026-10-27 and change the author name to GNN.\n"
+                "8. Update the title and release date to 2026-11-18 and add the internal-use notice and contact email.\n"
                 "9. Move serial writes to a background worker, add a 2-second write timeout, and remove the blocking UI-thread flush.\n"
                 "10. Move F102/F103 data-channel requests to a background worker so server timeouts do not freeze the UI.\n"
                 "11. Stop Auto Send, disconnect the faulty serial port, and report an error after a send timeout or serial failure.\n"
-                "12. Record RL-Data request failures and continue Auto Send; report separate success and failure counts.\n\n"
+                "12. Record RL-Data request failures and continue Auto Send; report separate success and failure counts.\n"
+                "13. Add a 240×80 Mangetic watermark at 18% opacity in the log view, maintaining a 14px bottom-right margin and passing through mouse events.\n\n"
                 "V 10.0\n"
                 "1. Optimize long-running log display and reduce serial read buffer pressure.\n"
                 "2. Improve basic log filtering, saving, and serial command workflows.\n"
@@ -2582,6 +2598,65 @@ class SerialPortTool(QWidget):
         if self.width() >= FIXED_AT_WIDE_WINDOW_THRESHOLD:
             return FIXED_AT_WIDE_EXPANDED_WIDTH
         return FIXED_AT_COMPACT_EXPANDED_WIDTH
+
+    def setup_log_watermark(self):
+        source = QPixmap(resource_path("bulid_photos/Mangetic.png"))
+        if source.isNull():
+            self.log_watermark = None
+            return
+
+        scaled = source.scaled(
+            LOG_WATERMARK_WIDTH,
+            LOG_WATERMARK_HEIGHT,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        transparent = QPixmap(scaled.size())
+        transparent.fill(Qt.transparent)
+        painter = QPainter(transparent)
+        painter.setOpacity(LOG_WATERMARK_OPACITY)
+        painter.drawPixmap(0, 0, scaled)
+        painter.end()
+
+        self.log_watermark = QLabel(self.log_container)
+        self.log_watermark.setPixmap(transparent)
+        self.log_watermark.setFixedSize(transparent.size())
+        self.log_watermark.setStyleSheet("background: transparent; border: none; padding: 0;")
+        self.log_watermark.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.log_watermark.setFocusPolicy(Qt.NoFocus)
+        self.log_container.installEventFilter(self)
+        self.log_text.viewport().installEventFilter(self)
+        self.position_log_watermark()
+        self.log_watermark.show()
+        self.log_watermark.raise_()
+
+    def position_log_watermark(self):
+        if not getattr(self, "log_watermark", None):
+            return
+
+        viewport = self.log_text.viewport()
+        viewport_origin = viewport.mapTo(self.log_container, QPoint(0, 0))
+        x = max(
+            0,
+            viewport_origin.x() + viewport.width()
+            - self.log_watermark.width() - LOG_WATERMARK_MARGIN,
+        )
+        y = max(
+            0,
+            viewport_origin.y() + viewport.height()
+            - self.log_watermark.height() - LOG_WATERMARK_MARGIN,
+        )
+        self.log_watermark.move(x, y)
+        self.log_watermark.raise_()
+
+    def eventFilter(self, watched, event):
+        if (
+            hasattr(self, "log_container")
+            and watched in (self.log_container, self.log_text.viewport())
+            and event.type() in (QEvent.Resize, QEvent.Show)
+        ):
+            self.position_log_watermark()
+        return super().eventFilter(watched, event)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

@@ -1,0 +1,9 @@
+chardet
+geopy
+matplotlib
+numpy
+openpyxl
+pandas
+Pillow
+simplekml
+

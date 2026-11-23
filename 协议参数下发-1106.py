@@ -12,13 +12,14 @@ from PyQt5.QtWidgets import (
     QApplication, QWidget, QLabel, QLineEdit, QPushButton,
     QComboBox, QTableWidget, QTableWidgetItem, QVBoxLayout,
     QHBoxLayout, QHeaderView, QCheckBox, QTextEdit, QMessageBox,
-    QFileDialog
+    QFileDialog, QGraphicsOpacityEffect
 )
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QColor, QIcon
+from PyQt5.QtCore import Qt, QThread, pyqtSignal, QEvent, QTimer
+from PyQt5.QtGui import QColor, QIcon, QPixmap
 
 
 APP_ICON_FILE = os.path.join("build_photo", "protocol_param_send.ico")
+WATERMARK_FILE = os.path.join("bulid_photos", "Mangetic.png")
 
 
 def resource_path(filename):
@@ -4866,6 +4867,68 @@ class SelectAllTableWidget(QTableWidget):
         self.position_top_left_widget()
 
 
+class WatermarkedTextEdit(QTextEdit):
+    """Read-only output area with a non-interactive bottom-right watermark."""
+
+    WATERMARK_WIDTH = 240
+    WATERMARK_HEIGHT = 80
+    WATERMARK_MARGIN = 14
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.watermark_label = QLabel(self.viewport())
+        self.watermark_label.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.watermark_label.setAlignment(Qt.AlignCenter)
+        self.watermark_label.setFixedSize(self.WATERMARK_WIDTH, self.WATERMARK_HEIGHT)
+        self.watermark_label.hide()
+
+        pixmap = QPixmap(resource_path(WATERMARK_FILE))
+        if not pixmap.isNull():
+            scaled_pixmap = pixmap.scaled(
+                self.WATERMARK_WIDTH,
+                self.WATERMARK_HEIGHT,
+                Qt.KeepAspectRatio,
+                Qt.SmoothTransformation,
+            )
+            self.watermark_label.setPixmap(scaled_pixmap)
+            opacity = QGraphicsOpacityEffect(self.watermark_label)
+            opacity.setOpacity(0.18)
+            self.watermark_label.setGraphicsEffect(opacity)
+            self.watermark_label.show()
+
+        self.viewport().installEventFilter(self)
+        self.position_watermark()
+        QTimer.singleShot(0, self.position_watermark)
+
+    def position_watermark(self):
+        viewport = self.viewport()
+        x = max(0, viewport.width() - self.watermark_label.width() - self.WATERMARK_MARGIN)
+        y = max(0, viewport.height() - self.watermark_label.height() - self.WATERMARK_MARGIN)
+        self.watermark_label.move(x, y)
+        self.watermark_label.raise_()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self.position_watermark()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.position_watermark)
+
+    def eventFilter(self, watched, event):
+        if watched is self.viewport() and event.type() in (
+            QEvent.Resize,
+            QEvent.Show,
+            QEvent.LayoutRequest,
+        ):
+            QTimer.singleShot(0, self.position_watermark)
+        return super().eventFilter(watched, event)
+
+    def scrollContentsBy(self, dx, dy):
+        super().scrollContentsBy(dx, dy)
+        self.position_watermark()
+
+
 class ParamToolUI(QWidget):
     def __init__(self):
         super().__init__()
@@ -4876,7 +4939,10 @@ class ParamToolUI(QWidget):
 
     def init_ui(self):
         """初始化界面。"""
-        self.setWindowTitle("参数默认值查询 / 设置与查询 / 非法值设置 / 非法长度设置工具 - GNN - 2026-11-06")
+        self.setWindowTitle(
+            "Richlink Parameter Setting Query Tool  2026-11-18  "
+            "※瑞联内部工具，谢绝外发※  guomengyao@gosuncn.com"
+        )
         self.setWindowIcon(QIcon(resource_path(APP_ICON_FILE)))
         self.resize(1300, 700)
 
@@ -4941,7 +5007,7 @@ class ParamToolUI(QWidget):
         header.setSectionResizeMode(5, QHeaderView.Fixed)
         self.table.setColumnWidth(5, 90)
 
-        self.log_text = QTextEdit()
+        self.log_text = WatermarkedTextEdit()
         self.log_text.setReadOnly(True)
 
         main_layout.addLayout(top_layout)

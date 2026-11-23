@@ -1,0 +1,11 @@
+chardet
+geopy
+matplotlib
+numpy
+openpyxl
+pandas
+Pillow
+pycryptodome
+simplekml
+tkinterdnd2
+

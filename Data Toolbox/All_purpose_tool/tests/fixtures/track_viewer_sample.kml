@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<kml xmlns="http://www.opengis.net/kml/2.2">
+  <Document>
+    <Placemark>
+      <name>测试轨迹</name>
+      <LineString><coordinates>108.878631,34.188178,0 108.882000,34.190000,0 108.886000,34.187000,0</coordinates></LineString>
+    </Placemark>
+    <Placemark>
+      <name>测试点</name>
+      <description>备注: 这是需要显示的测试备注</description>
+      <Point><coordinates>108.880000,34.189000,0</coordinates></Point>
+    </Placemark>
+    <Placemark>
+      <name>测试区域</name>
+      <Polygon><outerBoundaryIs><LinearRing><coordinates>108.874000,34.185000,0 108.876000,34.187000,0 108.873000,34.188000,0 108.874000,34.185000,0</coordinates></LinearRing></outerBoundaryIs></Polygon>
+    </Placemark>
+  </Document>
+</kml>
