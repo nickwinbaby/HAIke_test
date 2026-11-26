@@ -1,0 +1,155 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f7f8">
+  <title>Redmine 故障看板</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <div id="sessionLoading" class="login-view muted" role="status">正在打开故障看板…</div>
+  <main id="loginView" class="login-view" hidden>
+    <form id="loginForm" class="login-form">
+      <div class="brand-mark">R</div>
+      <h1>Redmine 故障看板</h1>
+      <label>Redmine 地址<input id="baseUrl" type="url" value="http://10.85.10.56/redmine/" required></label>
+      <label>登录名<input id="username" autocomplete="username" value="1000018" required></label>
+      <label>密码<input id="password" type="password" autocomplete="current-password" value="babysister" required></label>
+      <button class="button primary full" type="submit">连接 Redmine</button>
+      <p id="loginError" class="error-message" role="alert"></p>
+    </form>
+  </main>
+
+  <div id="appView" class="app-view" hidden>
+    <header class="topbar">
+      <a class="brand" href="#"><span class="brand-mark small">R</span><span>故障看板</span></a>
+      <div class="connection"><span class="online-dot"></span><span id="connectedUser"></span><button id="logoutButton" class="button quiet">退出</button></div>
+    </header>
+    <div class="workspace">
+      <aside class="stats-sidebar">
+        <section class="overview-module">
+          <div class="module-heading sidebar-heading"><h2>项目总览</h2><button id="refreshButton" class="button secondary" title="刷新故障数据"><span class="button-icon">↻</span>刷新</button></div>
+          <div class="summary-grid" aria-label="项目故障统计">
+            <article class="summary-item summary-total"><span>故障总数</span><strong id="statTotal">—</strong></article>
+            <article class="summary-item summary-open"><span>未关闭故障</span><strong id="statOpen">—</strong></article>
+            <article class="summary-item summary-closed"><span>已关闭故障</span><strong id="statClosed">—</strong></article>
+            <article class="summary-item summary-commented"><span>有批注</span><strong id="statCommented">—</strong></article>
+          </div>
+          <div class="overview-charts">
+            <section class="analytics-panel status-panel">
+              <div class="section-heading"><h3>全部故障状态分布</h3><span id="overviewStatusTotal" class="muted"></span></div>
+              <div id="overviewStatusChart" class="bar-list"><span class="muted">选择项目后显示</span></div>
+            </section>
+            <section class="analytics-panel priority-panel">
+              <div class="section-heading"><h3>全部故障优先级占比</h3><span class="muted">A / B / C / D</span></div>
+              <div id="overviewPriorityChart" class="priority-list"><span class="muted">选择项目后显示</span></div>
+            </section>
+          </div>
+        </section>
+      </aside>
+
+      <section class="main-content">
+        <div class="project-bar">
+          <label for="projectSelect">项目</label>
+          <div class="project-picker">
+            <input id="projectSelect" type="search" placeholder="输入或选择项目名称" aria-label="项目名称" autocomplete="off" aria-expanded="false" aria-controls="projectOptions">
+            <div id="projectOptions" class="project-options" role="listbox" hidden></div>
+          </div>
+          <span id="projectIdentifier" class="project-id"></span>
+          <span id="lastUpdated" class="last-updated"></span>
+        </div>
+
+        <section class="filter-module">
+          <div class="module-heading"><h2>筛选分析</h2><span>默认统计未关闭故障，筛选后图表与列表同步更新</span></div>
+          <div class="analytics-grid">
+            <section class="analytics-panel status-panel">
+              <div class="section-heading"><h3>筛选结果状态分布</h3><span id="statusTotal" class="muted"></span></div>
+              <div id="statusChart" class="bar-list"><span class="muted">选择项目后显示</span></div>
+            </section>
+            <section class="analytics-panel priority-panel">
+              <div class="section-heading"><h3>筛选结果优先级占比</h3><span class="muted">按当前状态及筛选</span></div>
+              <div id="priorityChart" class="priority-list"><span class="muted">选择项目后显示</span></div>
+            </section>
+          </div>
+        </section>
+
+        <section class="issues-section">
+          <div class="issues-heading"><div><h2>故障列表</h2></div><button id="exportButton" class="button secondary" title="导出当前筛选结果为 CSV" disabled><span class="button-icon">↓</span>导出 CSV</button></div>
+          <div class="filters">
+            <label>跟踪<select id="filterTracker"><option value="">全部</option></select></label>
+            <label>状态<select id="filterStatus"><option value="">全部未关闭</option><option value="__all__">全部</option></select></label>
+            <label>版本号<select id="filterVersion"><option value="">全部</option></select></label>
+            <label>优先级<select id="filterPriority"><option value="">全部</option></select></label>
+            <div class="date-filter">
+              <label>开始日期
+                <select id="startDateOperator">
+                  <option value="">全部</option>
+                  <option value="on">等于</option>
+                  <option value="onOrAfter">≥</option>
+                  <option value="onOrBefore">≤</option>
+                  <option value="between">介于</option>
+                  <option value="futureLess">剩余天数小于</option>
+                  <option value="futureMore">剩余天数大于</option>
+                  <option value="futureWithin">在未来几天之内</option>
+                  <option value="futureExact">剩余天数</option>
+                  <option value="today">今天</option>
+                  <option value="yesterday">昨天</option>
+                  <option value="thisWeek">本周</option>
+                  <option value="lastWeek">上周</option>
+                  <option value="lastTwoWeeks">过去两周</option>
+                  <option value="thisMonth">本月</option>
+                  <option value="lastMonth">上月</option>
+                  <option value="thisYear">今年</option>
+                  <option value="pastLess">之前天数小于</option>
+                  <option value="pastMore">之前天数大于</option>
+                  <option value="pastWithin">在过去几天之内</option>
+                  <option value="pastExact">之前天数</option>
+                  <option value="missing">无</option>
+                  <option value="present">有</option>
+                </select>
+              </label>
+              <label id="startDateFromField" hidden>日期<input id="startDateFrom" type="date" max="9999-12-31"></label>
+              <label id="startDateToField" hidden>结束日期<input id="startDateTo" type="date" max="9999-12-31"></label>
+              <label id="startDateDaysField" hidden>天数<input id="startDateDays" type="number" min="0" max="365000" step="1"></label>
+              <span id="startDateError" class="date-filter-error" role="status" hidden>结束日期不能早于起始日期</span>
+            </div>
+            <details class="author-filter">
+              <summary id="assigneeSummary">指派给：全部</summary>
+              <div class="author-options">
+                <div class="author-options-actions"><button id="assigneeClear" type="button" class="button quiet" aria-label="清空已选负责人" disabled>清空已选</button></div>
+                <div id="assigneeOptions" class="author-options-list"><span class="muted">选择项目后显示负责人</span></div>
+              </div>
+            </details>
+            <label>批注筛选<select id="filterComment"><option value="">全部</option><option value="has">有批注</option><option value="none">无批注</option></select></label>
+            <details class="author-filter">
+              <summary id="issueAuthorSummary">作者：全部</summary>
+              <div class="author-options">
+                <div class="author-options-actions"><button id="issueAuthorClear" type="button" class="button quiet" aria-label="清空已选作者" disabled>清空已选</button></div>
+                <div id="issueAuthorOptions" class="author-options-list"><span class="muted">加载故障后显示作者</span></div>
+              </div>
+            </details>
+            <details class="author-filter">
+              <summary id="commentAuthorSummary">批注人：全部</summary>
+              <div class="author-options">
+                <div class="author-options-actions"><button id="commentAuthorClear" type="button" class="button quiet" aria-label="清空已选批注人" disabled>清空已选</button></div>
+                <div id="commentAuthorOptions" class="author-options-list"><span class="muted">加载批注后显示作者</span></div>
+              </div>
+            </details>
+            <label class="check-filter"><input id="showAuthor" type="checkbox" autocomplete="off">显示作者</label>
+            <label class="check-filter"><input id="showComment" type="checkbox" autocomplete="off">显示批注</label>
+            <span id="issueCount" class="result-count">请选择项目</span>
+          </div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>故障编号</th><th>跟踪</th><th>状态</th><th>版本号</th><th>优先级</th><th>主题</th><th>指派给</th><th id="authorHeader" hidden>作者</th><th id="commentHeader" hidden>最近批注</th></tr></thead>
+            <tbody id="issueRows"><tr><td colspan="7" class="empty-state">选择项目以加载故障</td></tr></tbody>
+          </table><div id="loadMoreContainer" class="load-more" hidden><span id="visibleIssueCount"></span><button id="loadMoreButton" type="button" class="button secondary">加载更多 100 条</button></div></div>
+          <div id="loadingNote" class="loading-note" hidden></div>
+        </section>
+      </section>
+    </div>
+    <div id="toast" class="toast" role="status"></div>
+  </div>
+</body>
+</html>

@@ -1,7 +1,47 @@
 [
-  "loc/864114072569183",
-  "hertbeat/864114072569183",
-  "can/rx/864114072569183",
-  "can/tx/864114072569183",
-  "ota/864114072569183"
+  {
+    "enabled": true,
+    "topic": "loc/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "hertbeat/861540082331342",
+    "note": "123"
+  },
+  {
+    "enabled": true,
+    "topic": "can/rx/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "can/tx/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "ota/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "config/query/tx/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "config/query/rx/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "sensor/event/861540082331342",
+    "note": ""
+  },
+  {
+    "enabled": true,
+    "topic": "driving/event/861540082331342",
+    "note": ""
+  }
 ]

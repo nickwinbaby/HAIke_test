@@ -1,0 +1,4 @@
+PyQt5
+pyserial
+requests
+lz4>=4.0,<5

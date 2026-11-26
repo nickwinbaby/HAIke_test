@@ -1,16 +1,19 @@
 ﻿import os
 import sys
 import ctypes
+import hashlib
 import json
+import queue
 import re
+import threading
 import time
 from datetime import datetime
 
 import requests
 import serial
 import serial.tools.list_ports
-from PyQt5.QtCore import QLibraryInfo, QRect, QThread, QTimer, QTranslator, Qt, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QPalette, QTextCharFormat, QTextCursor
+from PyQt5.QtCore import QEvent, QLibraryInfo, QPoint, QRect, QThread, QTimer, QTranslator, Qt, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPalette, QPixmap, QTextCharFormat, QTextCursor
 from PyQt5.QtWidgets import (
     QAction,
     QActionGroup,
@@ -29,32 +32,40 @@ from PyQt5.QtWidgets import (
     QMenu,
     QMenuBar,
     QMessageBox,
+    QProgressBar,
+    QPlainTextEdit,
     QPushButton,
     QScrollArea,
     QSizePolicy,
     QSplitter,
     QSpinBox,
+    QStackedWidget,
     QStyle,
     QStyledItemDelegate,
     QStyleOptionViewItem,
     QTextEdit,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
+from gp03_filesystem import GP03ByteStream, GP03FileSystemDialog
 
-# PyInstaller --noconfirm --onefile --windowed --icon "bulid_photos/icon.ico" --add-data "bulid_photos/icon.ico;bulid_photos" "串口log过滤 - V18.0.py"
+# PyInstaller --noconfirm --clean --onefile --windowed --name "串口log过滤 - V20.0-20261126" --distpath "../dist" --workpath "../build" --icon "../bulid_photos/richlink_serial_tool.ico" --add-data "../bulid_photos/richlink_serial_tool.ico;bulid_photos" --add-data "../bulid_photos/Mangetic.png;bulid_photos" "串口log过滤 - V20.0.py"
 
-version = "18.0"
-Compilation_date = "2026-09-29 00:00:00"
+version = "20.0"
+Compilation_date = "2026-11-26"
 LOG_FILE_MAX_BYTES = 100 * 1024 * 1024
 LOG_FILE_SIZE_REFRESH_INTERVAL_MS = 60 * 1000
 LOG_FILE_FIRST_SIZE_REFRESH_DELAY_MS = 5 * 1000
 LOG_FILE_ROTATE_CHECK_INTERVAL_MS = 60 * 60 * 1000
-WINDOWS_APP_ID = "RichLink.SerialPortTool.V18"
+WINDOWS_APP_ID = "RichLink.SerialPortTool.V20"
 SEND_URL = "http://10.85.40.3:8088/client/send"
 APP_DATA_DIR_NAME = "tool_data"
 TOOL_SETTINGS_FILE_NAME = "tool_settings.json"
 SERIAL_PARTIAL_LINE_FLUSH_MS = 300
+SERIAL_WRITE_TIMEOUT_SECONDS = 2
+SEND_RESULT_POLL_INTERVAL_MS = 50
 FILTER_APPLY_DELAY_MS = 1000
 FIXED_AT_DEFAULT_ROWS = 10
 FIXED_AT_MAX_ROWS = 100
@@ -67,6 +78,75 @@ LOG_AUTO_SCROLL_MARGIN = 2
 LOG_NORMAL_MAX_LINES = 3000
 LOG_READING_MAX_LINES = 20000
 LOG_MAX_CONFIGURABLE_LINES = 99999
+LOG_WATERMARK_WIDTH = 240
+LOG_WATERMARK_HEIGHT = 80
+LOG_WATERMARK_MARGIN = 14
+LOG_WATERMARK_OPACITY = 0.18
+PARTITION_READ_TIMEOUT_MS = 5000
+FILE_TRANSFER_TIMEOUT_MS = 5000
+FILE_PREVIEW_MAX_BYTES = 2 * 1024 * 1024
+FILE_PREVIEW_CACHE_MAX_BYTES = 8 * 1024 * 1024
+CONFIG_CATEGORIES = (
+    ("恢复出厂设置", "Factory Reset", (
+        ("AT+RESETCONFIG", "恢复出厂设置", "Restore factory settings"),
+    )),
+    ("日志操作 & NTP时间同步", "Logging & NTP", (
+        ("LOG_LEVEL", "设置log等级", "Set log level"),
+        ("LOG_OUT_PUT_CHANNEL", "设置log通道", "Set log output channel"),
+        ("NTP_SYNC_ADDR1", "设置第一NTP服务器", "Set primary NTP server"),
+        ("NTP_SYNC_ADDR2", "设置第二NTP服务器", "Set secondary NTP server"),
+        ("NTP_SYNC_ADDR3", "设置第三NTP服务器", "Set third NTP server"),
+    )),
+    ("GNSS位置上报配置", "GNSS Reporting", (
+        ("GPS_REPORT_TIME_THRESHOLD", "设置GPS上报间隔", "Set GPS reporting interval"),
+        ("GPS_REPORT_PERIOD_ON_BACKUP", "长期追踪定时唤醒", "Set long-term tracking wakeup interval"),
+    )),
+    ("休眠模式配置", "Sleep Mode", (
+        ("MCU_SLEEP_MODE_ENABLE", "设置是否进入休眠", "Enable or disable sleep"),
+        ("SLEEP_MODE", "设置休眠模式", "Set sleep mode"),
+        ("SLEEP_WAKEUP_PERIOD", "设置定时唤醒", "Set scheduled wakeup"),
+    )),
+    ("蓝牙 & 传感器阈值配置", "Bluetooth & Sensors", (
+        ("BLE_ENABLE", "设置蓝牙打开/关闭", "Enable or disable Bluetooth"),
+        ("SENSOR_EVENT_ACCEL_THRESHOLD", "设置急加阈值", "Set acceleration threshold"),
+        ("SENSOR_EVENT_DECEL_THRESHOLD", "设置急减阈值", "Set deceleration threshold"),
+        ("SENSOR_EVENT_TURN_THRESHOLD", "设置急转弯阈值", "Set sharp turn threshold"),
+        ("SENSOR_WARNING_VIBRATION_LEVEL", "设置震动阈值", "Set vibration threshold"),
+        ("SENSOR_WARNING_COLLISION_LEVEL", "设置碰撞阈值", "Set collision threshold"),
+    )),
+    ("车辆告警阈值配置", "Vehicle Warnings", (
+        ("VEHICLE_FATIGUE_DRVING_TIME", "设置疲劳驾驶阈值", "Set fatigue driving threshold"),
+        ("VEHICLE_OVER_SPEED_THRESHOLD", "设置超速阈值", "Set overspeed threshold"),
+        ("LOW_POWER_THRESHOLD", "设置12V低电压阈值", "Set 12V low voltage threshold"),
+        ("LOW_POWER_THRESHOLD_24V", "设置24V低电压阈值", "Set 24V low voltage threshold"),
+        ("VEHICLE_IDLING_THRESHOLD", "设置怠速阈值", "Set idling threshold"),
+    )),
+    ("CAN/ASS & 事件上报开关", "CAN/ASS & Events", (
+        ("OBD_ENABLE", "使能/禁能CAN", "Enable or disable CAN"),
+        ("ASS_ENABLE", "使能/禁能ASS", "Enable or disable ASS"),
+        ("SENSOR_NORMAL_DATA_REPORT_ENABLE", "打开/关闭normal事件", "Enable or disable normal events"),
+        ("SENSOR_EVENT_DATA_REPORT_ENABLE", "打开/关闭event事件", "Enable or disable sensor events"),
+    )),
+    ("LED灯控制", "LED Control", (
+        ("DEVICE_LED_CTRL", "设置LED灯模式", "Set LED mode"),
+    )),
+    ("网络TSP服务器配置", "Network & TSP Server", (
+        ("TELEMATISC_APN_NAME", "设置APN名称", "Set APN name"),
+        ("TSP_SERVER_ADDR", "主服务器IP", "Primary server IP"),
+        ("TSP_SERVER_PORT", "主服务器端口", "Primary server port"),
+        ("TSP_BACKUP_SERVER_ADDR", "备用服务器IP", "Backup server IP"),
+        ("TSP_BACKUP_SERVER_PORT", "备用服务器端口", "Backup server port"),
+    )),
+    ("AGPS辅助定位配置", "AGPS", (
+        ("AGPS_ENABLE", "开启/关闭AGPS开关", "Enable or disable AGPS"),
+        ("AGPS_SERVER_ADDR", "设置AGPS服务器地址", "Set AGPS server address"),
+        ("AGPS_SERVER_PORT", "设置AGPS服务器端口", "Set AGPS server port"),
+    )),
+    ("其他功能开关", "Other Features", (
+        ("GPS_RAW_DATA_PRINTING_SWITCH", "开启/关闭GPS NEMA数据", "Enable or disable GPS NMEA output"),
+        ("JAMMING_DETECTED_WARNING_SWITCH", "干扰检测开关", "Enable or disable jamming detection"),
+    )),
+)
 AT_HISTORY_REMARK_DELIMITER = "-->"
 AT_HISTORY_COMMAND_COLUMN_CHARS = 46
 DEFAULT_LOG_FONT_FAMILY = "Consolas"
@@ -151,6 +231,9 @@ TEXTS = {
         "invalid_hex_title": "Invalid HEX",
         "invalid_hex_msg": "Please enter an even number of valid HEX characters, such as 01 03 0D 0A.",
         "fixed_at_commands": "Fixed AT Commands",
+        "fixed_config_commands": "Config Commands",
+        "config_command_row_placeholder_fmt": "Config command {index}",
+        "command_panel_changed": "Command panel changed, auto send stopped",
         "at_command_row_placeholder_fmt": "AT command {index}",
         "group_label_fmt": "G{index}",
         "expand": "Add",
@@ -182,6 +265,7 @@ TEXTS = {
         "auto_send_stopped": "Auto send stopped",
         "auto_send_completed": "Auto send completed",
         "auto_send_failed": "Auto send stopped: send failed",
+        "auto_send_data_failed": "RL-Data request failed; continuing",
         "auto_send_serial_changed": "Auto send stopped: serial setting changed",
         "auto_send_serial_disconnected": "Auto send stopped: serial disconnected",
         "auto_send_serial_error": "Auto send stopped: serial error",
@@ -210,6 +294,50 @@ TEXTS = {
         "sent_log_fmt": "{timestamp} Sent[{channel}]: {command}",
         "log_label": "Log",
         "size_label": "Size",
+        "partition_view": "Partition View",
+        "partition_view_title": "Partition View",
+        "partition_read": "Read Partitions",
+        "partition_close": "Close View",
+        "partition_name_column": "Name",
+        "partition_size_column": "Size",
+        "partition_ready": "Ready to read partitions",
+        "partition_reading": "Reading partitions...",
+        "partition_complete_fmt": "Read complete: {received}/{total} partitions",
+        "partition_timeout_fmt": "Read timed out: received {received}/{total} partitions",
+        "partition_disconnected": "Partition read stopped: serial disconnected",
+        "partition_root_fmt": "Device partitions ({count})",
+        "partition_folder_fmt": "{total}.{index} {name} ({count} files)",
+        "partition_empty_fmt": "{total}.{index} {name} (empty)",
+        "partition_bytes_fmt": "{size} B",
+        "partition_preparing_channel": "Disabling device log output...",
+        "partition_querying_mtu": "Negotiating file transfer MTU...",
+        "partition_mtu_fmt": "Reading partitions... MTU: {mtu}",
+        "partition_prepare_failed": "Partition preparation timed out",
+        "partition_download": "Download file...",
+        "partition_choose_download_dir": "Choose download folder",
+        "partition_overwrite_title": "Replace file",
+        "partition_overwrite_msg": "{name} already exists. Replace it?",
+        "partition_download_busy": "A file download is already in progress",
+        "partition_download_start_fmt": "Preparing download: {name}",
+        "partition_download_progress_fmt": "Downloading {name}: {received}/{total} B",
+        "partition_download_complete_fmt": "Download complete: {path}",
+        "partition_download_failed_fmt": "Download failed: {error}",
+        "partition_download_result_title": "File Download",
+        "partition_download_success_msg": "The file was downloaded successfully.\n\nSaved to:\n{path}",
+        "partition_download_failure_msg": "The file download failed.\n\nReason: {error}",
+        "partition_preview": "View file",
+        "partition_preview_title": "File Preview",
+        "partition_preview_empty": "Right-click a file and select View file.",
+        "partition_preview_text": "Text",
+        "partition_preview_hex": "HEX",
+        "partition_preview_start_fmt": "Loading preview: {name}",
+        "partition_preview_progress_fmt": "Loading {name}: {received}/{total} B",
+        "partition_preview_complete_fmt": "Preview ready: {name} ({size} B, cached)",
+        "partition_preview_failed_fmt": "Preview failed: {error}",
+        "partition_preview_failure_msg": "The file preview failed.\n\nReason: {error}",
+        "partition_preview_too_large": "This file is too large to preview (maximum 2 MB). Use Download file instead.",
+        "partition_empty_file_msg": "This file is 0 bytes and cannot be viewed or downloaded.",
+        "partition_transfer_busy": "File transfer is in progress. Please wait until it finishes.",
     },
     "zh": {
         "help": "帮助",
@@ -280,6 +408,9 @@ TEXTS = {
         "invalid_hex_title": "HEX 无效",
         "invalid_hex_msg": "请输入偶数个有效 HEX 字符，例如 01 03 0D 0A。",
         "fixed_at_commands": "固定 AT 命令",
+        "fixed_config_commands": "config 指令",
+        "config_command_row_placeholder_fmt": "config 指令 {index}",
+        "command_panel_changed": "已切换命令面板，自动发送已停止",
         "at_command_row_placeholder_fmt": "AT 命令 {index}",
         "group_label_fmt": "组{index}",
         "expand": "增加",
@@ -311,6 +442,7 @@ TEXTS = {
         "auto_send_stopped": "自动发送已停止",
         "auto_send_completed": "自动发送已完成",
         "auto_send_failed": "自动发送已停止: 发送失败",
+        "auto_send_data_failed": "RL-Data 请求失败，继续发送",
         "auto_send_serial_changed": "自动发送已停止: 串口设置变化",
         "auto_send_serial_disconnected": "自动发送已停止: 串口断开",
         "auto_send_serial_error": "自动发送已停止: 串口错误",
@@ -339,6 +471,50 @@ TEXTS = {
         "sent_log_fmt": "{timestamp} 已发送[{channel}]: {command}",
         "log_label": "日志",
         "size_label": "大小",
+        "partition_view": "分区查看",
+        "partition_view_title": "分区查看",
+        "partition_read": "读取分区",
+        "partition_close": "关闭查看",
+        "partition_name_column": "名称",
+        "partition_size_column": "大小",
+        "partition_ready": "等待读取分区",
+        "partition_reading": "正在读取分区...",
+        "partition_complete_fmt": "读取完成：{received}/{total} 个分区",
+        "partition_timeout_fmt": "读取超时：已收到 {received}/{total} 个分区",
+        "partition_disconnected": "分区读取已停止：串口断开",
+        "partition_root_fmt": "设备分区（{count}）",
+        "partition_folder_fmt": "{total}.{index} {name}（{count} 个文件）",
+        "partition_empty_fmt": "{total}.{index} {name}（空）",
+        "partition_bytes_fmt": "{size} B",
+        "partition_preparing_channel": "正在关闭设备日志输出...",
+        "partition_querying_mtu": "正在协商文件传输 MTU...",
+        "partition_mtu_fmt": "正在读取分区... MTU：{mtu}",
+        "partition_prepare_failed": "分区读取准备超时",
+        "partition_download": "下载文件...",
+        "partition_choose_download_dir": "选择下载目录",
+        "partition_overwrite_title": "覆盖文件",
+        "partition_overwrite_msg": "{name} 已存在，是否覆盖？",
+        "partition_download_busy": "已有文件正在下载",
+        "partition_download_start_fmt": "正在准备下载：{name}",
+        "partition_download_progress_fmt": "正在下载 {name}：{received}/{total} B",
+        "partition_download_complete_fmt": "下载完成：{path}",
+        "partition_download_failed_fmt": "下载失败：{error}",
+        "partition_download_result_title": "文件下载",
+        "partition_download_success_msg": "文件下载成功。\n\n保存位置：\n{path}",
+        "partition_download_failure_msg": "文件下载失败。\n\n原因：{error}",
+        "partition_preview": "查看文件",
+        "partition_preview_title": "文件查看",
+        "partition_preview_empty": "右键点击文件并选择“查看文件”。",
+        "partition_preview_text": "纯文本",
+        "partition_preview_hex": "HEX",
+        "partition_preview_start_fmt": "正在读取预览：{name}",
+        "partition_preview_progress_fmt": "正在读取 {name}：{received}/{total} B",
+        "partition_preview_complete_fmt": "文件已打开：{name}（{size} B，来自缓存）",
+        "partition_preview_failed_fmt": "文件查看失败：{error}",
+        "partition_preview_failure_msg": "文件查看失败。\n\n原因：{error}",
+        "partition_preview_too_large": "文件过大，无法预览（最大 2 MB），请使用“下载文件”。",
+        "partition_empty_file_msg": "该文件大小为 0 字节，无法查看或下载。",
+        "partition_transfer_busy": "文件传输正在进行，请等待完成。",
     },
 }
 
@@ -425,18 +601,27 @@ class ATCommandHistoryDelegate(QStyledItemDelegate):
 class SerialReader(QThread):
     """串口读取线程：后台读取串口数据，按行发送给主界面。"""
 
-    data_received = pyqtSignal(str, str, str)
+    log_events = pyqtSignal(object, object)
+    raw_data_received = pyqtSignal(bytes)
     error_occurred = pyqtSignal(str)
 
-    def __init__(self, port, baudrate):
+    def __init__(self, port, baudrate, modem_lines=(False, False)):
         super().__init__()
         self.port = port
         self.baudrate = baudrate
+        self.modem_lines = modem_lines
         self.serial = None
         self.running = False
         self.buffer = b""
         self.max_buffer_size = 10240
         self.last_buffer_update_time = None
+        self.raw_transfer_mode = False
+        self.log_order_lock = threading.Lock()
+        self.lines_during_write = None
+        self.gp03_mode_lock = threading.Lock()
+        self.gp03_rx_queue = None
+        self.gp03_replay_queue = queue.Queue()
+        self.serial_write_lock = threading.Lock()
 
     def decode_line(self, line_bytes):
         try:
@@ -451,17 +636,80 @@ class SerialReader(QThread):
             return
 
         hex_line = " ".join(f"{byte:02X}" for byte in line_bytes)
-        self.data_received.emit(format_log_timestamp(), text_line, hex_line)
+        with self.log_order_lock:
+            line = (format_log_timestamp(), text_line, hex_line)
+            if self.lines_during_write is None:
+                self.log_events.emit(None, (line,))
+            else:
+                self.lines_during_write.append(line)
+
+    def begin_write(self):
+        with self.log_order_lock:
+            self.lines_during_write = []
+            return format_log_timestamp()
+
+    def finish_write(self, request_id, timestamp, success, error):
+        with self.log_order_lock:
+            # Queue the result and any early replies together before releasing later lines.
+            self.log_events.emit((request_id, timestamp, success, error), self.lines_during_write)
+            self.lines_during_write = None
 
     def run(self):
         error_message = None
         try:
-            self.serial = serial.Serial(self.port, self.baudrate, timeout=0.1)
+            serial_port = serial.Serial(
+                baudrate=self.baudrate,
+                timeout=0.1,
+                write_timeout=SERIAL_WRITE_TIMEOUT_SECONDS,
+            )
+            # Configure the line states before opening the port.
+            applied_lines = self.modem_lines
+            serial_port.dtr, serial_port.rts = applied_lines
+            serial_port.port = self.port
+            serial_port.open()
+            self.serial = serial_port
             self.running = True
 
             while self.running:
-                if self.serial.in_waiting:
+                desired_lines = self.modem_lines
+                if desired_lines != applied_lines:
+                    if desired_lines[0] != applied_lines[0]:
+                        serial_port.dtr = desired_lines[0]
+                    if desired_lines[1] != applied_lines[1]:
+                        serial_port.rts = desired_lines[1]
+                    applied_lines = desired_lines
+
+                replay_data = None
+                try:
+                    replay_data = self.gp03_replay_queue.get_nowait()
+                except queue.Empty:
+                    pass
+
+                if replay_data is not None:
+                    data = replay_data
+                elif self.serial.in_waiting:
                     data = self.serial.read(self.serial.in_waiting)
+                else:
+                    data = None
+
+                if data:
+                    with self.gp03_mode_lock:
+                        gp03_rx_queue = self.gp03_rx_queue
+                        if gp03_rx_queue is not None:
+                            gp03_rx_queue.put(data)
+                    if gp03_rx_queue is not None:
+                        if self.buffer.strip():
+                            self.emit_line(self.buffer)
+                        self.buffer = b""
+                        self.last_buffer_update_time = None
+                        continue
+
+                    raw_transfer_mode = self.raw_transfer_mode
+                    self.raw_data_received.emit(data)
+                    if raw_transfer_mode:
+                        self.buffer = b""
+                        self.last_buffer_update_time = None
+                        continue
 
                     self.buffer += data
                     self.last_buffer_update_time = time.monotonic()
@@ -506,12 +754,120 @@ class SerialReader(QThread):
             self.serial.close()
 
 
+class BackgroundSerialSender:
+    """Serializes writes off the UI thread and orders their results with incoming lines."""
+
+    def __init__(self, serial_reader):
+        self.serial_reader = serial_reader
+        self.requests = queue.Queue()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self.run, name="SerialSendWorker", daemon=True)
+        self.thread.start()
+
+    def submit(self, request_id, payload):
+        if self.stop_event.is_set():
+            return False
+        self.requests.put((request_id, payload))
+        return True
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                request = self.requests.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if request is None:
+                break
+
+            request_id, payload = request
+            timestamp = self.serial_reader.begin_write()
+            success = False
+            error_message = "Serial write failed"
+            try:
+                serial_port = self.serial_reader.serial
+                if serial_port is None or not serial_port.is_open:
+                    raise serial.SerialException("Serial port is not open")
+
+                with self.serial_reader.serial_write_lock:
+                    written = serial_port.write(payload)
+                if written != len(payload):
+                    raise serial.SerialTimeoutException(
+                        f"Serial write timed out ({written}/{len(payload)} bytes)"
+                    )
+                success = True
+                error_message = ""
+            except (serial.SerialTimeoutException, serial.SerialException, OSError) as error:
+                error_message = str(error)
+            finally:
+                if not success:
+                    self.stop_event.set()
+                self.serial_reader.finish_write(request_id, timestamp, success, error_message)
+
+    def stop(self):
+        self.stop_event.set()
+        self.requests.put(None)
+
+
+class BackgroundDataSender:
+    """Runs F102/F103 HTTP requests without blocking the Qt event loop."""
+
+    def __init__(self):
+        self.requests = queue.Queue()
+        self.results = queue.Queue()
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(target=self.run, name="DataSendWorker", daemon=True)
+        self.thread.start()
+
+    def submit(self, request_id, payload):
+        if self.stop_event.is_set():
+            return False
+        self.requests.put((request_id, payload))
+        return True
+
+    def run(self):
+        while not self.stop_event.is_set():
+            try:
+                request = self.requests.get(timeout=0.1)
+            except queue.Empty:
+                continue
+
+            if request is None:
+                break
+
+            request_id, payload = request
+            try:
+                response = requests.post(SEND_URL, json=payload, timeout=10)
+                response.raise_for_status()
+                self.results.put((request_id, True, ""))
+            except requests.RequestException as error:
+                self.results.put((request_id, False, str(error)))
+
+    def stop(self):
+        self.stop_event.set()
+        self.requests.put(None)
+
+
 class SerialPortTool(QWidget):
     """串口日志过滤工具主窗口。"""
 
     def __init__(self):
         super().__init__()
         self.serial_thread = None
+        self.serial_sender = None
+        self.gp03_dialog = None
+        self.gp03_io_active = False
+        self.gp03_rx_queue = None
+        self.gp03_cancel_event = None
+        self.gp03_close_pending = False
+        self.data_sender = BackgroundDataSender()
+        self.send_request_id = 0
+        self.pending_serial_sends = {}
+        self.pending_data_sends = {}
+        self.send_result_timer = QTimer(self)
+        self.send_result_timer.setInterval(SEND_RESULT_POLL_INTERVAL_MS)
+        self.send_result_timer.timeout.connect(self.process_data_send_results)
+        self.send_result_timer.start()
         self.log_file = None
         self.data_dir = app_data_dir(create=False)
         self.settings_file = os.path.join(self.data_dir, TOOL_SETTINGS_FILE_NAME)
@@ -553,6 +909,7 @@ class SerialPortTool(QWidget):
         self.fixed_at_rows = []
         self.fixed_at_groups = self.create_default_fixed_at_groups()
         self.current_fixed_at_group = 0
+        self.command_panel_kind = "at"
         self.fixed_at_group_buttons = []
         self.loading_fixed_at_commands = False
         self.auto_send_queue = []
@@ -560,7 +917,11 @@ class SerialPortTool(QWidget):
         self.auto_send_active = False
         self.auto_send_total = 0
         self.auto_send_success_count = 0
+        self.auto_send_failure_count = 0
         self.auto_send_commands_per_round = 0
+        self.auto_send_run_id = 0
+        self.auto_send_outstanding = 0
+        self.auto_send_queue_finished = False
         self.auto_send_timer = QTimer(self)
         self.auto_send_timer.timeout.connect(self.process_auto_send_next)
         self.last_regex_error = ""
@@ -571,14 +932,55 @@ class SerialPortTool(QWidget):
         self.filter_apply_timer.setSingleShot(True)
         self.filter_apply_timer.setInterval(FILTER_APPLY_DELAY_MS)
         self.filter_apply_timer.timeout.connect(self.apply_pending_filter)
+        self.partition_dialog = None
+        self.partition_tree = None
+        self.partition_status_label = None
+        self.partition_download_progress = None
+        self.partition_preview_label = None
+        self.partition_preview_mode = None
+        self.partition_preview_text = None
+        self.partition_read_button = None
+        self.partition_reading = False
+        self.partition_phase = "idle"
+        self.partition_phase_response_seen = False
+        self.partition_response_started = False
+        self.partition_expected_total = 0
+        self.partition_entries = {}
+        self.partition_mtu = 0
+        self.partition_read_timer = QTimer(self)
+        self.partition_read_timer.setSingleShot(True)
+        self.partition_read_timer.timeout.connect(self.finish_partition_read_timeout)
+        self.file_download_active = False
+        self.file_transfer_mode = "download"
+        self.file_download_state = "idle"
+        self.file_download_remote_path = ""
+        self.file_download_name = ""
+        self.file_download_target_path = ""
+        self.file_download_temp_path = ""
+        self.file_download_expected_size = 0
+        self.file_download_expected_md5 = ""
+        self.file_download_offset = 0
+        self.file_download_request_size = 0
+        self.file_download_buffer = b""
+        self.file_download_file = None
+        self.file_download_hash = None
+        self.file_preview_bytes = bytearray()
+        self.partition_file_cache = {}
+        self.current_partition_preview_path = ""
+        self.file_download_timer = QTimer(self)
+        self.file_download_timer.setSingleShot(True)
+        self.file_download_timer.timeout.connect(self.handle_file_download_timeout)
 
         self.initUI()
         self.load_command_history()
         self.load_fixed_at_commands()
 
     def initUI(self):
-        self.setWindowTitle("RichLink Serial Port Tool V" + version + " --Mangetic-20260929")
-        self.setWindowIcon(QIcon(resource_path("bulid_photos/icon.ico")))
+        self.setWindowTitle(
+            "RichLink Serial Port Tool V" + version
+            + f"    {Compilation_date}    ※瑞联内部工具，谢绝外发※    guomengyao@gosuncn.com"
+        )
+        self.setWindowIcon(QIcon(resource_path("bulid_photos/richlink_serial_tool.ico")))
         self.setGeometry(420, 140, 1020, 720)
         self.setMinimumSize(860, 620)
 
@@ -762,6 +1164,14 @@ class SerialPortTool(QWidget):
         if self.is_valid_baudrate(baudrate) and self.settings.get("baudrate") != baudrate:
             self.settings["baudrate"] = baudrate
             self.save_tool_settings()
+
+    def update_serial_modem_lines(self):
+        dtr = self.dtr_checkbox.isChecked()
+        rts = self.rts_checkbox.isChecked()
+        if self.serial_thread is not None:
+            self.serial_thread.modem_lines = (dtr, rts)
+        self.settings.update(dtr=dtr, rts=rts)
+        self.save_tool_settings()
 
     def load_last_log_dir(self):
         folder = str(self.settings.get("last_log_dir", "")).strip()
@@ -1122,6 +1532,10 @@ class SerialPortTool(QWidget):
 
     def apply_language(self, show_status=True):
         self.help_menu.setTitle(self.tr_text("help"))
+        self.partition_view_action.setText(self.tr_text("partition_view"))
+        self.gp03_filesystem_action.setText(
+            "GP03 File System" if self.language == "en" else "分区查看GP03"
+        )
         self.instructions_action.setText(self.tr_text("instructions"))
         self.about_action.setText(self.tr_text("about"))
         self.setting_menu.setTitle(self.tr_text("setting"))
@@ -1164,8 +1578,7 @@ class SerialPortTool(QWidget):
         self.delete_history_button.setToolTip("")
         self.newline_checkbox.setText(self.tr_text("send_with_enter"))
         self.hex_checkbox.setText(self.tr_text("hex"))
-        self.fixed_at_group.setTitle(self.tr_text("fixed_at_commands"))
-        self.side_button.setText("》" if self.scroll_area.isVisible() else "+\n+\n+")
+        self.update_command_panel_buttons()
         self.expand_fixed_at_button.setText(self.tr_text("expand"))
         self.delete_fixed_at_button.setText(self.tr_text("delete"))
         self.interval_label.setText(self.tr_text("interval"))
@@ -1176,10 +1589,16 @@ class SerialPortTool(QWidget):
         self.update_filter_placeholder()
 
         for i, row in enumerate(self.fixed_at_rows, 1):
-            row["input"].setPlaceholderText(self.tr_text("at_command_row_placeholder_fmt", index=i))
+            placeholder_key = "at_command_row_placeholder_fmt"
+            row["input"].setPlaceholderText(self.tr_text(placeholder_key, index=i))
             row["send_button"].setText(self.tr_text("send"))
 
         self.update_fixed_at_group_buttons()
+
+        self.update_config_language()
+        self.update_partition_dialog_language()
+        if self.gp03_dialog is not None:
+            self.gp03_dialog.update_language()
 
         if self.is_serial_connected():
             port = self.get_selected_port()
@@ -1195,6 +1614,8 @@ class SerialPortTool(QWidget):
         menu_bar = QMenuBar(self)
         self.help_menu = QMenu("Help", self)
         self.setting_menu = QMenu("Setting", self)
+        self.partition_view_action = QAction("Partition View", self)
+        self.gp03_filesystem_action = QAction("GP03 File System", self)
 
         self.instructions_action = QAction("Instructions", self)
         self.about_action = QAction("About", self)
@@ -1219,6 +1640,8 @@ class SerialPortTool(QWidget):
 
         self.instructions_action.triggered.connect(self.show_instructions)
         self.about_action.triggered.connect(self.show_about)
+        self.partition_view_action.triggered.connect(self.show_partition_view)
+        self.gp03_filesystem_action.triggered.connect(self.show_gp03_filesystem)
         self.english_action.triggered.connect(lambda _checked=False: self.set_language("en"))
         self.chinese_action.triggered.connect(lambda _checked=False: self.set_language("zh"))
         self.timestamp_action.triggered.connect(lambda _checked=False: self.toggle_timestamp_display())
@@ -1242,6 +1665,8 @@ class SerialPortTool(QWidget):
         self.help_menu.addAction(self.about_action)
         menu_bar.addMenu(self.help_menu)
         menu_bar.addMenu(self.setting_menu)
+        menu_bar.addAction(self.partition_view_action)
+        menu_bar.addAction(self.gp03_filesystem_action)
         self.main_layout.setMenuBar(menu_bar)
 
     def build_connection_bar(self):
@@ -1253,7 +1678,8 @@ class SerialPortTool(QWidget):
         connection_layout.setSpacing(8)
 
         self.port_combo = QComboBox()
-        self.port_combo.setFixedWidth(220)
+        self.port_combo.setMinimumWidth(120)
+        self.port_combo.setMaximumWidth(220)
 
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setFixedWidth(78)
@@ -1268,15 +1694,21 @@ class SerialPortTool(QWidget):
         self.connect_button = QPushButton("Connect")
         self.disconnect_button = QPushButton("Disconnect")
         self.disconnect_button.setEnabled(False)
+        self.dtr_checkbox = QCheckBox("DTR")
+        self.rts_checkbox = QCheckBox("RTS")
+        self.dtr_checkbox.setChecked(self.settings.get("dtr") is True)
+        self.rts_checkbox.setChecked(self.settings.get("rts") is True)
 
         self.connection_label = QLabel("Disconnected")
         self.connection_label.setObjectName("connectionLabel")
+        self.connection_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.connection_label.setWordWrap(True)
 
         self.port_label = QLabel("Port")
         self.baud_label = QLabel("Baud")
 
         connection_layout.addWidget(self.port_label)
-        connection_layout.addWidget(self.port_combo)
+        connection_layout.addWidget(self.port_combo, 1)
         connection_layout.addWidget(self.refresh_button)
         connection_layout.addSpacing(10)
         connection_layout.addWidget(self.baud_label)
@@ -1284,8 +1716,9 @@ class SerialPortTool(QWidget):
         connection_layout.addSpacing(10)
         connection_layout.addWidget(self.connect_button)
         connection_layout.addWidget(self.disconnect_button)
-        connection_layout.addStretch(1)
-        connection_layout.addWidget(self.connection_label)
+        connection_layout.addWidget(self.dtr_checkbox)
+        connection_layout.addWidget(self.rts_checkbox)
+        connection_layout.addWidget(self.connection_label, 1)
 
         connection_panel.setLayout(connection_layout)
         self.main_layout.addWidget(connection_panel)
@@ -1293,9 +1726,912 @@ class SerialPortTool(QWidget):
         self.refresh_button.clicked.connect(self.refresh_ports)
         self.connect_button.clicked.connect(self.connect_serial)
         self.disconnect_button.clicked.connect(self.disconnect_serial)
+        self.dtr_checkbox.toggled.connect(self.update_serial_modem_lines)
+        self.rts_checkbox.toggled.connect(self.update_serial_modem_lines)
         self.port_combo.currentIndexChanged.connect(self.handle_serial_settings_changed)
         self.baudrate_combo.currentIndexChanged.connect(self.save_baudrate_setting)
         self.baudrate_combo.currentIndexChanged.connect(self.handle_serial_settings_changed)
+
+    def show_gp03_filesystem(self):
+        if self.gp03_dialog is not None and self.gp03_dialog.isVisible():
+            self.focus_partition_window(self.gp03_dialog)
+            return
+        if self.partition_reading or self.file_download_active:
+            self.focus_partition_window(self.partition_dialog)
+            self.set_status(self.tr_text("partition_transfer_busy"))
+            return
+        if self.gp03_io_active:
+            self.set_status(self.tr_text("partition_transfer_busy"))
+            return
+        if not self.is_serial_connected():
+            QMessageBox.information(
+                self,
+                "GP03 File System" if self.language == "en" else "GP03 文件管理",
+                self.tr_text("not_connected_msg"),
+            )
+            return
+        if self.gp03_dialog is None:
+            self.gp03_dialog = GP03FileSystemDialog(
+                self,
+                self.begin_gp03_io,
+                self.end_gp03_io,
+                self.tr_text,
+                parent=self,
+            )
+        if self.partition_dialog is not None and self.partition_dialog.isVisible():
+            if not self.partition_dialog.close():
+                return
+        self.focus_partition_window(self.gp03_dialog)
+
+    @staticmethod
+    def focus_partition_window(dialog):
+        if dialog is None:
+            return
+        if dialog.isMinimized():
+            dialog.setWindowState(dialog.windowState() & ~Qt.WindowMinimized)
+        dialog.show()
+        dialog.raise_()
+        dialog.activateWindow()
+
+    def begin_gp03_io(self):
+        if not self.is_serial_connected() or not self.serial_thread:
+            QMessageBox.warning(self, "GP03", self.tr_text("not_connected_msg"))
+            return None
+        if self.partition_reading or self.file_download_active or self.gp03_io_active:
+            QMessageBox.information(self, "GP03", self.tr_text("partition_transfer_busy"))
+            return None
+        if self.auto_send_active:
+            self.stop_auto_send(self.tr_text("command_panel_changed"))
+        if self.pending_serial_sends or (self.serial_sender and not self.serial_sender.requests.empty()):
+            QMessageBox.information(
+                self,
+                "GP03",
+                "Please wait for the pending serial command to finish."
+                if self.language == "en" else "请等待当前串口命令发送完成后再操作。",
+            )
+            return None
+
+        reader = self.serial_thread
+        rx_queue = queue.Queue()
+        cancel_event = threading.Event()
+        with reader.gp03_mode_lock:
+            if reader.gp03_rx_queue is not None:
+                return None
+            reader.gp03_rx_queue = rx_queue
+        self.gp03_rx_queue = rx_queue
+        self.gp03_cancel_event = cancel_event
+        self.gp03_io_active = True
+
+        def write_bytes(payload):
+            serial_port = reader.serial
+            if serial_port is None or not serial_port.is_open:
+                raise serial.SerialException("Serial port is not open")
+            with reader.serial_write_lock:
+                return serial_port.write(payload)
+
+        self.disconnect_button.setEnabled(False)
+        return GP03ByteStream(rx_queue, write_bytes, cancel_event, format_log_timestamp)
+
+    def end_gp03_io(self, stream):
+        reader = self.serial_thread
+        if reader is not None and stream is not None:
+            with reader.gp03_mode_lock:
+                pending = stream.take_unread()
+                if pending:
+                    reader.gp03_replay_queue.put(pending)
+                if reader.gp03_rx_queue is stream.rx_queue:
+                    reader.gp03_rx_queue = None
+        self.gp03_rx_queue = None
+        self.gp03_cancel_event = None
+        self.gp03_io_active = False
+        if self.is_serial_connected():
+            self.disconnect_button.setEnabled(True)
+
+    def abort_gp03_io(self):
+        if self.gp03_cancel_event is not None:
+            self.gp03_cancel_event.set()
+        if self.gp03_rx_queue is not None:
+            self.gp03_rx_queue.put(None)
+
+    def show_partition_view(self):
+        if self.gp03_io_active or (self.gp03_dialog is not None and self.gp03_dialog.worker is not None):
+            self.focus_partition_window(self.gp03_dialog)
+            self.set_status(self.tr_text("partition_transfer_busy"))
+            return
+        if self.gp03_dialog is not None and self.gp03_dialog.isVisible():
+            if not self.gp03_dialog.close():
+                return
+        if self.partition_dialog is None:
+            window_flags = (
+                Qt.Window
+                | Qt.WindowTitleHint
+                | Qt.WindowSystemMenuHint
+                | Qt.WindowMinMaxButtonsHint
+                | Qt.WindowCloseButtonHint
+            )
+            self.partition_dialog = QDialog(None, window_flags)
+            self.partition_dialog.setModal(False)
+            self.partition_dialog.setWindowIcon(self.windowIcon())
+            self.partition_dialog.resize(1080, 620)
+
+            dialog_layout = QVBoxLayout(self.partition_dialog)
+            toolbar_layout = QHBoxLayout()
+            self.partition_read_button = QPushButton()
+            self.partition_close_button = QPushButton()
+            self.partition_status_label = QLabel()
+            self.partition_status_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            toolbar_layout.addWidget(self.partition_read_button)
+            toolbar_layout.addWidget(self.partition_close_button)
+            toolbar_layout.addWidget(self.partition_status_label, 1)
+            dialog_layout.addLayout(toolbar_layout)
+
+            self.partition_download_progress = QProgressBar()
+            self.partition_download_progress.setRange(0, 1000)
+            self.partition_download_progress.setValue(0)
+            self.partition_download_progress.setTextVisible(True)
+            self.partition_download_progress.setVisible(False)
+            dialog_layout.addWidget(self.partition_download_progress)
+
+            self.partition_tree = QTreeWidget()
+            self.partition_tree.setColumnCount(2)
+            self.partition_tree.setColumnWidth(0, 520)
+            self.partition_tree.setAlternatingRowColors(True)
+            self.partition_tree.setUniformRowHeights(True)
+            self.partition_tree.setContextMenuPolicy(Qt.CustomContextMenu)
+
+            preview_panel = QWidget()
+            preview_layout = QVBoxLayout(preview_panel)
+            preview_layout.setContentsMargins(0, 0, 0, 0)
+            preview_toolbar = QHBoxLayout()
+            self.partition_preview_label = QLabel()
+            self.partition_preview_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            self.partition_preview_mode = QComboBox()
+            self.partition_preview_mode.addItem("", "text")
+            self.partition_preview_mode.addItem("HEX", "hex")
+            preview_toolbar.addWidget(self.partition_preview_label, 1)
+            preview_toolbar.addWidget(self.partition_preview_mode)
+            preview_layout.addLayout(preview_toolbar)
+            self.partition_preview_text = QPlainTextEdit()
+            self.partition_preview_text.setReadOnly(True)
+            self.partition_preview_text.setLineWrapMode(QPlainTextEdit.NoWrap)
+            self.partition_preview_text.setFont(self.log_font)
+            preview_layout.addWidget(self.partition_preview_text, 1)
+
+            partition_splitter = QSplitter(Qt.Horizontal)
+            partition_splitter.setChildrenCollapsible(False)
+            partition_splitter.addWidget(self.partition_tree)
+            partition_splitter.addWidget(preview_panel)
+            partition_splitter.setSizes([470, 610])
+            dialog_layout.addWidget(partition_splitter, 1)
+
+            self.partition_read_button.clicked.connect(self.read_partitions)
+            self.partition_close_button.clicked.connect(self.partition_dialog.close)
+            self.partition_tree.customContextMenuRequested.connect(self.show_partition_context_menu)
+            self.partition_preview_mode.currentIndexChanged.connect(self.render_partition_file_preview)
+            self.partition_dialog.finished.connect(self.close_partition_view)
+            self.update_partition_dialog_language()
+
+        self.focus_partition_window(self.partition_dialog)
+
+    def update_partition_dialog_language(self):
+        if self.partition_dialog is None:
+            return
+        self.partition_dialog.setWindowTitle(self.tr_text("partition_view_title"))
+        self.partition_read_button.setText(self.tr_text("partition_read"))
+        self.partition_close_button.setText(self.tr_text("partition_close"))
+        self.partition_tree.setHeaderLabels(
+            [self.tr_text("partition_name_column"), self.tr_text("partition_size_column")]
+        )
+        self.partition_preview_label.setText(self.tr_text("partition_preview_title"))
+        self.partition_preview_mode.setItemText(0, self.tr_text("partition_preview_text"))
+        self.partition_preview_mode.setItemText(1, self.tr_text("partition_preview_hex"))
+        if not self.current_partition_preview_path:
+            self.partition_preview_text.setPlaceholderText(self.tr_text("partition_preview_empty"))
+        if not self.partition_reading and not self.partition_entries:
+            self.partition_status_label.setText(self.tr_text("partition_ready"))
+        self.render_partition_tree()
+
+    def read_partitions(self):
+        if self.partition_reading or self.file_download_active or self.gp03_io_active:
+            if self.gp03_io_active:
+                self.set_status(
+                    "GP03 file operation is using the serial port."
+                    if self.language == "en" else "GP03 文件操作正在使用串口，请等待完成。"
+                )
+            return
+
+        if self.auto_send_active:
+            self.stop_auto_send(self.tr_text("command_panel_changed"))
+
+        self.partition_read_timer.stop()
+        self.partition_expected_total = 0
+        self.partition_entries = {}
+        self.partition_reading = True
+        self.partition_phase = "log_channel"
+        self.partition_phase_response_seen = False
+        self.partition_response_started = False
+        self.partition_tree.clear()
+        self.partition_read_button.setEnabled(False)
+        self.partition_status_label.setText(self.tr_text("partition_preparing_channel"))
+
+        if not self.send_routed_command(
+            "AT+LOGCHANNEL=Null",
+            add_history=False,
+            use_newline_checkbox=False,
+            internal_transfer=True,
+        ):
+            self.reset_partition_read(self.tr_text("partition_ready"))
+            return
+
+        self.partition_read_timer.start(PARTITION_READ_TIMEOUT_MS)
+
+    def close_partition_view(self, _result=None):
+        if self.file_download_active:
+            self.fail_partition_file_download("partition view closed", show_dialog=False)
+        self.partition_read_timer.stop()
+        self.partition_reading = False
+        self.partition_phase = "idle"
+        self.partition_phase_response_seen = False
+        self.partition_response_started = False
+        if self.partition_read_button is not None:
+            self.partition_read_button.setEnabled(True)
+
+    def parse_partition_response(self, text_data):
+        if not self.partition_reading:
+            return
+        if self.partition_phase != "partitions":
+            return
+
+        line = text_data.strip()
+        is_first_line = line.upper().startswith("+FILENAME:")
+        if is_first_line:
+            line = line.split(":", 1)[1].strip()
+        elif not self.partition_response_started:
+            return
+
+        tokens = [token.strip() for token in line.split(",")]
+        while tokens and not tokens[-1]:
+            tokens.pop()
+        if len(tokens) < 4:
+            return
+
+        try:
+            total = int(tokens[0])
+            index = int(tokens[1])
+            file_count = int(tokens[3])
+        except ValueError:
+            return
+
+        if total <= 0 or index <= 0 or index > total or file_count < 0:
+            return
+        if self.partition_expected_total not in (0, total):
+            return
+
+        partition_name = tokens[2] or f"Partition {index}"
+        file_tokens = tokens[4:]
+        if len(file_tokens) < file_count * 2:
+            return
+
+        files = []
+        for file_index in range(file_count):
+            name = file_tokens[file_index * 2]
+            size_text = file_tokens[file_index * 2 + 1]
+            try:
+                size = int(size_text)
+            except ValueError:
+                return
+            if not name or size < 0:
+                return
+            files.append((name, size))
+
+        self.partition_expected_total = total
+        self.partition_response_started = True
+        self.partition_entries[index] = {
+            "name": partition_name,
+            "files": files,
+        }
+        self.render_partition_tree()
+
+        if all(partition_index in self.partition_entries for partition_index in range(1, total + 1)):
+            self.finish_partition_read_complete()
+
+    def handle_partition_control_response(self, text_data):
+        if not self.partition_reading:
+            return
+
+        line = text_data.strip()
+        if self.partition_phase == "log_channel":
+            if not line.upper().startswith("+LOGCHANNEL:NULL"):
+                return
+            self.partition_phase = "mtu"
+            self.partition_phase_response_seen = True
+            self.partition_status_label.setText(self.tr_text("partition_querying_mtu"))
+            if not self.send_routed_command(
+                "AT+DEVICEINFO=GetCapacity,MTU",
+                add_history=False,
+                use_newline_checkbox=False,
+                internal_transfer=True,
+            ):
+                self.reset_partition_read(self.tr_text("partition_prepare_failed"))
+                return
+            self.partition_read_timer.start(PARTITION_READ_TIMEOUT_MS)
+            return
+
+        if self.partition_phase != "mtu":
+            return
+
+        match = re.search(r"\+DEVICEINFO:GetCapacity,MTU,(\d+)", line, re.IGNORECASE)
+        if not match:
+            return
+
+        mtu = int(match.group(1))
+        if mtu <= 0:
+            self.reset_partition_read(self.tr_text("partition_prepare_failed"))
+            return
+
+        self.partition_mtu = mtu
+        self.partition_phase = "partitions"
+        self.partition_phase_response_seen = True
+        self.partition_status_label.setText(self.tr_text("partition_mtu_fmt", mtu=mtu))
+        if not self.send_routed_command(
+            "AT+FILENAME?",
+            add_history=False,
+            use_newline_checkbox=False,
+            internal_transfer=True,
+        ):
+            self.reset_partition_read(self.tr_text("partition_prepare_failed"))
+            return
+        self.partition_read_timer.start(PARTITION_READ_TIMEOUT_MS)
+
+    def render_partition_tree(self):
+        if self.partition_tree is None:
+            return
+
+        self.partition_tree.clear()
+        total = self.partition_expected_total or len(self.partition_entries)
+        if total <= 0:
+            return
+
+        root = QTreeWidgetItem(
+            [self.tr_text("partition_root_fmt", count=total), ""]
+        )
+        root.setIcon(0, self.style().standardIcon(QStyle.SP_DriveHDIcon))
+        self.partition_tree.addTopLevelItem(root)
+        for index in sorted(self.partition_entries):
+            entry = self.partition_entries[index]
+            files = entry["files"]
+            if files:
+                folder_text = self.tr_text(
+                    "partition_folder_fmt",
+                    total=total,
+                    index=index,
+                    name=entry["name"],
+                    count=len(files),
+                )
+            else:
+                folder_text = self.tr_text(
+                    "partition_empty_fmt",
+                    total=total,
+                    index=index,
+                    name=entry["name"],
+                )
+            folder_item = QTreeWidgetItem([folder_text, ""])
+            folder_item.setIcon(0, self.style().standardIcon(QStyle.SP_DirIcon))
+            root.addChild(folder_item)
+            for file_name, file_size in files:
+                file_item = QTreeWidgetItem(
+                    [file_name, self.tr_text("partition_bytes_fmt", size=file_size)]
+                )
+                file_item.setIcon(0, self.style().standardIcon(QStyle.SP_FileIcon))
+                file_item.setData(
+                    0,
+                    Qt.UserRole,
+                    {
+                        "remote_path": f"/{entry['name']}/{file_name}",
+                        "name": file_name,
+                        "size": file_size,
+                    },
+                )
+                folder_item.addChild(file_item)
+        root.setExpanded(True)
+        for child_index in range(root.childCount()):
+            root.child(child_index).setExpanded(True)
+
+    def finish_partition_read_complete(self):
+        self.partition_read_timer.stop()
+        self.partition_reading = False
+        self.partition_phase = "idle"
+        self.partition_phase_response_seen = False
+        self.partition_response_started = False
+        self.partition_read_button.setEnabled(True)
+        received = len(self.partition_entries)
+        self.partition_status_label.setText(
+            self.tr_text(
+                "partition_complete_fmt",
+                received=received,
+                total=self.partition_expected_total,
+            )
+        )
+
+    def finish_partition_read_timeout(self):
+        if not self.partition_reading:
+            return
+        if self.partition_phase != "partitions":
+            self.reset_partition_read(self.tr_text("partition_prepare_failed"))
+            return
+        self.partition_reading = False
+        self.partition_phase = "idle"
+        self.partition_phase_response_seen = False
+        self.partition_response_started = False
+        if self.partition_read_button is not None:
+            self.partition_read_button.setEnabled(True)
+        received = len(self.partition_entries)
+        total = self.partition_expected_total or "?"
+        if self.partition_status_label is not None:
+            self.partition_status_label.setText(
+                self.tr_text("partition_timeout_fmt", received=received, total=total)
+            )
+
+    def reset_partition_read(self, status_text=None):
+        self.partition_read_timer.stop()
+        self.partition_reading = False
+        self.partition_phase = "idle"
+        self.partition_phase_response_seen = False
+        self.partition_response_started = False
+        if self.partition_read_button is not None:
+            self.partition_read_button.setEnabled(True)
+        if status_text and self.partition_status_label is not None:
+            self.partition_status_label.setText(status_text)
+
+    def show_partition_context_menu(self, position):
+        item = self.partition_tree.itemAt(position)
+        if item is None:
+            return
+        file_info = item.data(0, Qt.UserRole)
+        if not isinstance(file_info, dict) or not file_info.get("remote_path"):
+            return
+
+        menu = QMenu(self.partition_tree)
+        preview_action = menu.addAction(self.tr_text("partition_preview"))
+        download_action = menu.addAction(self.tr_text("partition_download"))
+        selected_action = menu.exec_(self.partition_tree.viewport().mapToGlobal(position))
+        if selected_action is preview_action:
+            self.start_partition_file_preview(file_info)
+        elif selected_action is download_action:
+            self.choose_partition_download_path(file_info)
+
+    def start_partition_file_preview(self, file_info):
+        if self.reject_empty_partition_file(file_info):
+            return
+        if self.file_download_active:
+            QMessageBox.information(
+                self.partition_dialog,
+                self.tr_text("partition_view_title"),
+                self.tr_text("partition_download_busy"),
+            )
+            return
+
+        cached = self.partition_file_cache.get(file_info["remote_path"])
+        if cached is not None:
+            self.current_partition_preview_path = file_info["remote_path"]
+            self.partition_file_cache.pop(file_info["remote_path"], None)
+            self.partition_file_cache[file_info["remote_path"]] = cached
+            self.render_partition_file_preview()
+            self.partition_status_label.setText(
+                self.tr_text(
+                    "partition_preview_complete_fmt",
+                    name=file_info["name"],
+                    size=len(cached),
+                )
+            )
+            return
+
+        if file_info.get("size", 0) > FILE_PREVIEW_MAX_BYTES:
+            QMessageBox.information(
+                self.partition_dialog,
+                self.tr_text("partition_preview_title"),
+                self.tr_text("partition_preview_too_large"),
+            )
+            return
+
+        self.start_partition_file_transfer(file_info, transfer_mode="preview")
+
+    def choose_partition_download_path(self, file_info):
+        if self.reject_empty_partition_file(file_info):
+            return
+        if self.file_download_active:
+            QMessageBox.information(
+                self.partition_dialog,
+                self.tr_text("partition_view_title"),
+                self.tr_text("partition_download_busy"),
+            )
+            return
+
+        target_dir = QFileDialog.getExistingDirectory(
+            self.partition_dialog,
+            self.tr_text("partition_choose_download_dir"),
+            self.last_log_dir or "",
+        )
+        if not target_dir:
+            return
+        target_path = os.path.join(target_dir, file_info["name"])
+
+        if os.path.exists(target_path):
+            answer = QMessageBox.question(
+                self.partition_dialog,
+                self.tr_text("partition_overwrite_title"),
+                self.tr_text("partition_overwrite_msg", name=os.path.basename(target_path)),
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No,
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        self.start_partition_file_transfer(
+            file_info,
+            transfer_mode="download",
+            target_path=target_path,
+        )
+
+    def reject_empty_partition_file(self, file_info):
+        try:
+            file_size = int(file_info.get("size", 0))
+        except (TypeError, ValueError):
+            file_size = 0
+        if file_size > 0:
+            return False
+
+        QMessageBox.information(
+            self.partition_dialog,
+            self.tr_text("partition_preview_title"),
+            self.tr_text("partition_empty_file_msg"),
+        )
+        return True
+
+    def start_partition_file_download(self, file_info, target_path):
+        self.start_partition_file_transfer(
+            file_info,
+            transfer_mode="download",
+            target_path=target_path,
+        )
+
+    def start_partition_file_transfer(self, file_info, transfer_mode, target_path=""):
+        if self.reject_empty_partition_file(file_info):
+            return
+        if not self.is_serial_connected():
+            QMessageBox.warning(
+                self.partition_dialog,
+                self.tr_text("not_connected_title"),
+                self.tr_text("not_connected_msg"),
+            )
+            return
+        if self.partition_mtu <= 0:
+            self.partition_status_label.setText(self.tr_text("partition_prepare_failed"))
+            return
+        if self.auto_send_active:
+            self.stop_auto_send(self.tr_text("command_panel_changed"))
+
+        self.file_download_active = True
+        self.file_transfer_mode = transfer_mode
+        self.file_download_state = "filesize"
+        self.file_download_remote_path = file_info["remote_path"]
+        self.file_download_name = file_info["name"]
+        self.file_download_target_path = target_path
+        self.file_download_temp_path = target_path + ".part" if target_path else ""
+        self.file_download_expected_size = 0
+        self.file_download_expected_md5 = ""
+        self.file_download_offset = 0
+        self.file_download_request_size = 0
+        self.file_download_buffer = b""
+        self.file_download_hash = hashlib.md5()
+        self.file_preview_bytes = bytearray()
+        if self.serial_thread:
+            self.serial_thread.raw_transfer_mode = True
+        self.partition_read_button.setEnabled(False)
+        self.partition_download_progress.setValue(0)
+        self.partition_download_progress.setFormat(f"{self.file_download_name} 0%")
+        self.partition_download_progress.setVisible(True)
+        status_key = (
+            "partition_preview_start_fmt"
+            if transfer_mode == "preview"
+            else "partition_download_start_fmt"
+        )
+        self.partition_status_label.setText(self.tr_text(status_key, name=self.file_download_name))
+
+        if transfer_mode == "download":
+            try:
+                self.file_download_file = open(self.file_download_temp_path, "wb")
+            except OSError as error:
+                self.fail_partition_file_download(str(error))
+                return
+        else:
+            self.file_download_file = None
+
+        command = f'AT+FILESIZE="{self.file_download_remote_path}"'
+        if not self.send_routed_command(
+            command,
+            add_history=False,
+            use_newline_checkbox=False,
+            internal_transfer=True,
+        ):
+            self.fail_partition_file_download("unable to send FILESIZE")
+            return
+        self.file_download_timer.start(FILE_TRANSFER_TIMEOUT_MS)
+
+    def handle_file_download_raw_data(self, data):
+        if not self.file_download_active:
+            return
+
+        self.file_download_buffer += data
+        if self.file_download_state == "filesize":
+            self.process_file_size_response()
+        elif self.file_download_state == "read":
+            self.process_file_read_response()
+
+    def process_file_size_response(self):
+        escaped_path = re.escape(self.file_download_remote_path.encode("utf-8"))
+        pattern = (
+            rb'\+FILESIZE:"' + escaped_path
+            + rb'",(\d+),([0-9a-fA-F]{32})\r?\n\r?\nOK\r?\n'
+        )
+        match = re.search(pattern, self.file_download_buffer)
+        if not match:
+            return
+
+        self.file_download_timer.stop()
+        self.file_download_expected_size = int(match.group(1))
+        self.file_download_expected_md5 = match.group(2).decode("ascii").lower()
+        self.file_download_buffer = b""
+        if (
+            self.file_transfer_mode == "preview"
+            and self.file_download_expected_size > FILE_PREVIEW_MAX_BYTES
+        ):
+            self.fail_partition_file_download(self.tr_text("partition_preview_too_large"))
+            return
+        self.update_partition_download_progress()
+        if self.file_download_expected_size == 0:
+            self.complete_partition_file_download()
+            return
+        self.request_next_file_chunk()
+
+    def request_next_file_chunk(self):
+        remaining = self.file_download_expected_size - self.file_download_offset
+        if remaining <= 0:
+            self.complete_partition_file_download()
+            return
+
+        self.file_download_request_size = min(self.partition_mtu, remaining)
+        self.file_download_state = "read"
+        self.file_download_buffer = b""
+        command = (
+            f'AT+FILEREAD="{self.file_download_remote_path}",'
+            f'{self.file_download_offset},{self.file_download_request_size}'
+        )
+        if not self.send_routed_command(
+            command,
+            add_history=False,
+            use_newline_checkbox=False,
+            internal_transfer=True,
+        ):
+            self.fail_partition_file_download("unable to send FILEREAD")
+            return
+        self.file_download_timer.start(FILE_TRANSFER_TIMEOUT_MS)
+
+    def process_file_read_response(self):
+        escaped_path = re.escape(self.file_download_remote_path.encode("utf-8"))
+        header_pattern = rb'\+FILEREAD:"' + escaped_path + rb'",(\d+),'
+        header_match = re.search(header_pattern, self.file_download_buffer)
+        if not header_match:
+            return
+
+        response_size = int(header_match.group(1))
+        expected_response_size = self.file_download_request_size + 4
+        if response_size != expected_response_size:
+            self.fail_partition_file_download(
+                f"unexpected FILEREAD length {response_size}, expected {expected_response_size}"
+            )
+            return
+
+        payload_start = header_match.end()
+        payload_end = payload_start + response_size
+        response_suffix = b"\r\n\r\nOK\r\n"
+        if len(self.file_download_buffer) < payload_end + len(response_suffix):
+            return
+
+        suffix = self.file_download_buffer[payload_end:payload_end + len(response_suffix)]
+        if suffix != response_suffix:
+            self.fail_partition_file_download("invalid FILEREAD terminator")
+            return
+
+        file_bytes = self.file_download_buffer[
+            payload_start:payload_start + self.file_download_request_size
+        ]
+        if self.file_transfer_mode == "preview":
+            self.file_preview_bytes.extend(file_bytes)
+        else:
+            try:
+                self.file_download_file.write(file_bytes)
+            except OSError as error:
+                self.fail_partition_file_download(str(error))
+                return
+
+        self.file_download_hash.update(file_bytes)
+        self.file_download_offset += len(file_bytes)
+        self.file_download_timer.stop()
+        self.update_partition_download_progress()
+        progress_key = (
+            "partition_preview_progress_fmt"
+            if self.file_transfer_mode == "preview"
+            else "partition_download_progress_fmt"
+        )
+        self.partition_status_label.setText(
+            self.tr_text(
+                progress_key,
+                name=self.file_download_name,
+                received=self.file_download_offset,
+                total=self.file_download_expected_size,
+            )
+        )
+        self.request_next_file_chunk()
+
+    def update_partition_download_progress(self):
+        if self.partition_download_progress is None:
+            return
+        total = self.file_download_expected_size
+        received = self.file_download_offset
+        progress = 0 if total <= 0 else min(1000, int(received * 1000 / total))
+        self.partition_download_progress.setValue(progress)
+        self.partition_download_progress.setFormat(
+            f"{self.file_download_name}  %p%  ({received}/{total} B)"
+        )
+
+    def complete_partition_file_download(self):
+        if self.file_download_offset != self.file_download_expected_size:
+            self.fail_partition_file_download("downloaded size does not match FILESIZE")
+            return
+
+        calculated_md5 = self.file_download_hash.hexdigest()
+        if self.file_download_expected_md5 and calculated_md5 != self.file_download_expected_md5:
+            self.fail_partition_file_download(
+                f"MD5 mismatch ({calculated_md5} != {self.file_download_expected_md5})"
+            )
+            return
+
+        self.file_download_timer.stop()
+        if self.file_transfer_mode == "preview":
+            preview_data = bytes(self.file_preview_bytes)
+            remote_path = self.file_download_remote_path
+            preview_name = self.file_download_name
+            self.cache_partition_file(remote_path, preview_data)
+            self.current_partition_preview_path = remote_path
+            if self.partition_download_progress is not None:
+                self.partition_download_progress.setValue(1000)
+            self.reset_file_download_state(hide_progress=False)
+            self.render_partition_file_preview()
+            self.partition_status_label.setText(
+                self.tr_text(
+                    "partition_preview_complete_fmt",
+                    name=preview_name,
+                    size=len(preview_data),
+                )
+            )
+            return
+
+        try:
+            if self.file_download_file:
+                self.file_download_file.flush()
+                self.file_download_file.close()
+                self.file_download_file = None
+            os.replace(self.file_download_temp_path, self.file_download_target_path)
+        except OSError as error:
+            self.fail_partition_file_download(str(error))
+            return
+
+        completed_path = self.file_download_target_path
+        if self.partition_download_progress is not None:
+            self.partition_download_progress.setValue(1000)
+        self.reset_file_download_state(hide_progress=False)
+        self.partition_status_label.setText(
+            self.tr_text("partition_download_complete_fmt", path=completed_path)
+        )
+
+        QMessageBox.information(
+            self.partition_dialog,
+            self.tr_text("partition_download_result_title"),
+            self.tr_text("partition_download_success_msg", path=completed_path),
+        )
+
+    def cache_partition_file(self, remote_path, data):
+        self.partition_file_cache.pop(remote_path, None)
+        self.partition_file_cache[remote_path] = data
+        while (
+            sum(len(cached) for cached in self.partition_file_cache.values())
+            > FILE_PREVIEW_CACHE_MAX_BYTES
+            and len(self.partition_file_cache) > 1
+        ):
+            oldest_path = next(iter(self.partition_file_cache))
+            if oldest_path == remote_path and len(self.partition_file_cache) > 1:
+                oldest_path = next(iter(list(self.partition_file_cache)[1:]))
+            self.partition_file_cache.pop(oldest_path, None)
+
+    def render_partition_file_preview(self, _index=None):
+        if self.partition_preview_text is None:
+            return
+        data = self.partition_file_cache.get(self.current_partition_preview_path)
+        if data is None:
+            self.partition_preview_text.clear()
+            return
+
+        mode = self.partition_preview_mode.currentData()
+        if mode == "hex":
+            lines = []
+            for offset in range(0, len(data), 16):
+                chunk = data[offset:offset + 16]
+                hex_text = " ".join(f"{byte:02X}" for byte in chunk)
+                ascii_text = "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in chunk)
+                lines.append(f"{offset:08X}  {hex_text:<47}  {ascii_text}")
+            display_text = "\n".join(lines)
+        else:
+            display_text = data.decode("utf-8", errors="replace")
+
+        self.partition_preview_text.setPlainText(display_text)
+        cursor = self.partition_preview_text.textCursor()
+        cursor.movePosition(QTextCursor.Start)
+        self.partition_preview_text.setTextCursor(cursor)
+
+    def fail_partition_file_download(self, error, show_dialog=True):
+        failed_mode = self.file_transfer_mode
+        self.file_download_timer.stop()
+        if self.file_download_file:
+            try:
+                self.file_download_file.close()
+            except OSError:
+                pass
+            self.file_download_file = None
+        if self.file_download_temp_path and os.path.exists(self.file_download_temp_path):
+            try:
+                os.remove(self.file_download_temp_path)
+            except OSError:
+                pass
+        self.reset_file_download_state()
+        if self.partition_status_label is not None:
+            status_key = (
+                "partition_preview_failed_fmt"
+                if failed_mode == "preview"
+                else "partition_download_failed_fmt"
+            )
+            self.partition_status_label.setText(
+                self.tr_text(status_key, error=error)
+            )
+        if show_dialog and self.partition_dialog is not None:
+            message_key = (
+                "partition_preview_failure_msg"
+                if failed_mode == "preview"
+                else "partition_download_failure_msg"
+            )
+            QMessageBox.warning(
+                self.partition_dialog,
+                self.tr_text("partition_preview_title")
+                if failed_mode == "preview"
+                else self.tr_text("partition_download_result_title"),
+                self.tr_text(message_key, error=error),
+            )
+
+    def reset_file_download_state(self, hide_progress=True):
+        if self.serial_thread:
+            self.serial_thread.raw_transfer_mode = False
+        self.file_download_active = False
+        self.file_download_state = "idle"
+        self.file_download_buffer = b""
+        self.file_download_request_size = 0
+        if hide_progress and self.partition_download_progress is not None:
+            self.partition_download_progress.setVisible(False)
+        if self.partition_read_button is not None:
+            self.partition_read_button.setEnabled(True)
+
+    def handle_file_download_timeout(self):
+        if self.file_download_active:
+            self.fail_partition_file_download("response timeout")
 
     def build_filter_bar(self):
         filter_panel = QFrame()
@@ -1389,6 +2725,11 @@ class SerialPortTool(QWidget):
         left_layout.setSpacing(8)
         left_panel.setLayout(left_layout)
 
+        self.log_container = QWidget()
+        log_container_layout = QVBoxLayout(self.log_container)
+        log_container_layout.setContentsMargins(0, 0, 0, 0)
+        log_container_layout.setSpacing(0)
+
         self.log_text = QTextEdit()
         self.log_text.setReadOnly(True)
         self.log_text.document().setMaximumBlockCount(self.max_log_lines)
@@ -1396,7 +2737,9 @@ class SerialPortTool(QWidget):
         self.log_text.zoomIn = lambda *args, **kwargs: None
         self.log_text.zoomOut = lambda *args, **kwargs: None
         self.log_text.verticalScrollBar().valueChanged.connect(self.update_log_line_limit_for_scroll)
-        left_layout.addWidget(self.log_text, 1)
+        log_container_layout.addWidget(self.log_text)
+        left_layout.addWidget(self.log_container, 1)
+        self.setup_log_watermark()
 
         self.command_group = QGroupBox("AT Commands")
         command_layout = QVBoxLayout()
@@ -1432,7 +2775,6 @@ class SerialPortTool(QWidget):
         history_layout.setSpacing(4)
         history_layout.addWidget(self.command_history_combo, 1)
         self.delete_history_button = QPushButton("Delete")
-        self.delete_history_button.setFixedWidth(58)
         self.delete_history_button.setObjectName("historyDeleteButton")
         self.delete_history_button.setToolTip("")
         self.delete_history_button.clicked.connect(self.delete_selected_command_history)
@@ -1441,11 +2783,21 @@ class SerialPortTool(QWidget):
         self.command_group.setLayout(command_layout)
         left_layout.addWidget(self.command_group)
 
-        self.side_button = QPushButton("+\n+\n+")
-        self.side_button.setFixedWidth(24)
-        self.side_button.setObjectName("sideToggleButton")
-        self.side_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
-        self.side_button.clicked.connect(self.toggle_fixed_at_commands)
+        side_controls = QWidget()
+        side_controls.setFixedWidth(24)
+        side_layout = QVBoxLayout(side_controls)
+        side_layout.setContentsMargins(0, 0, 0, 0)
+        side_layout.setSpacing(6)
+        self.command_panel_buttons = {}
+        for panel_kind in ("at", "config"):
+            button = QPushButton()
+            button.setCheckable(True)
+            button.setFixedWidth(24)
+            button.setObjectName("sideToggleButton")
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Expanding)
+            button.clicked.connect(lambda _, kind=panel_kind: self.toggle_command_panel(kind))
+            side_layout.addWidget(button, 1)
+            self.command_panel_buttons[panel_kind] = button
 
         self.fixed_at_group = QGroupBox("Fixed AT Commands")
         fixed_at_layout = QVBoxLayout()
@@ -1531,20 +2883,26 @@ class SerialPortTool(QWidget):
         self.scroll_area.setWidgetResizable(True)
         self.scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll_area.setMinimumWidth(FIXED_AT_COMPACT_EXPANDED_WIDTH - FIXED_AT_COLLAPSED_WIDTH - 6)
-        self.scroll_area.setVisible(False)
+        self.command_panel_content = QStackedWidget()
+        self.command_panel_content.addWidget(self.scroll_area)
+        self.config_panel = QWidget()
+        self.build_config_panel()
+        self.command_panel_content.addWidget(self.config_panel)
+        self.command_panel_content.setVisible(False)
 
         right_panel = QWidget()
         right_layout = QHBoxLayout()
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(6)
-        right_layout.addWidget(self.side_button)
-        right_layout.addWidget(self.scroll_area, 1)
+        right_layout.addWidget(side_controls)
+        right_layout.addWidget(self.command_panel_content, 1)
         right_panel.setLayout(right_layout)
         right_panel.setMinimumWidth(FIXED_AT_COLLAPSED_WIDTH)
         right_panel.setMaximumWidth(FIXED_AT_COLLAPSED_WIDTH)
         self.fixed_at_panel_shell = right_panel
 
         self.content_splitter = QSplitter(Qt.Horizontal)
+        self.content_splitter.setHandleWidth(4)
         self.content_splitter.setChildrenCollapsible(False)
         self.content_splitter.addWidget(left_panel)
         self.content_splitter.addWidget(right_panel)
@@ -1560,6 +2918,136 @@ class SerialPortTool(QWidget):
         self.delete_fixed_at_button.clicked.connect(self.delete_empty_fixed_at_row)
         self.auto_send_button.clicked.connect(self.toggle_auto_send)
 
+    def build_config_panel(self):
+        panel_layout = QVBoxLayout(self.config_panel)
+        panel_layout.setContentsMargins(6, 0, 0, 0)
+        panel_layout.setSpacing(6)
+        self.config_category_combo = QComboBox()
+        self.config_category_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.config_category_combo.setMinimumContentsLength(10)
+        self.config_category_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.config_category_combo.addItem("", -1)
+        for index, _category in enumerate(CONFIG_CATEGORIES):
+            self.config_category_combo.addItem("", index)
+        panel_layout.addWidget(self.config_category_combo)
+
+        self.config_scroll_area = QScrollArea()
+        self.config_scroll_area.setWidgetResizable(True)
+        self.config_scroll_area.setFrameShape(QFrame.NoFrame)
+        self.config_scroll_area.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        content = QWidget()
+        rows_layout = QVBoxLayout(content)
+        rows_layout.setContentsMargins(0, 0, 4, 0)
+        rows_layout.setSpacing(6)
+        self.config_rows = []
+        for category_index, (_zh, _en, entries) in enumerate(CONFIG_CATEGORIES):
+            for function, description_zh, description_en in entries:
+                row_widget = QWidget()
+                row_layout = QVBoxLayout(row_widget)
+                row_layout.setContentsMargins(0, 2, 0, 0)
+                row_layout.setSpacing(4)
+                name_layout = QHBoxLayout()
+                name_layout.setSpacing(2)
+                number = QLabel()
+                number.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+                name = QLabel(function)
+                name.setTextFormat(Qt.PlainText)
+                name.setWordWrap(False)
+                name.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+                name_layout.addWidget(number)
+                name_layout.addWidget(name, 1)
+                row_layout.addLayout(name_layout)
+
+                controls = QHBoxLayout()
+                controls.setSpacing(4)
+                reset = function == "AT+RESETCONFIG"
+                value_input = None
+                if not reset:
+                    value_input = QLineEdit()
+                    value_input.setMinimumWidth(40)
+                    controls.addWidget(value_input, 1)
+                send_button = QPushButton()
+                send_button.setFixedHeight(28)
+                send_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                if reset:
+                    name_layout.addWidget(send_button)
+                else:
+                    controls.addWidget(send_button)
+                query_button = None
+                if not reset:
+                    query_button = QPushButton()
+                    query_button.setFixedHeight(28)
+                    query_button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+                    controls.addWidget(query_button)
+                if not reset:
+                    row_layout.addLayout(controls)
+                separator = QFrame()
+                separator.setFrameShape(QFrame.HLine)
+                separator.setStyleSheet("color: #d6dde7;")
+                row_layout.addWidget(separator)
+                row = {
+                    "widget": row_widget, "category": category_index,
+                    "function": function, "number": number, "name": name,
+                    "input": value_input, "send_button": send_button,
+                    "query_button": query_button,
+                    "description_zh": description_zh, "description_en": description_en,
+                }
+                self.config_rows.append(row)
+                send_button.clicked.connect(lambda _, item=row: self.send_config_command(item))
+                if query_button is not None:
+                    query_button.clicked.connect(lambda _, item=row: self.send_config_command(item, query=True))
+                    value_input.returnPressed.connect(lambda item=row: self.send_config_command(item))
+                rows_layout.addWidget(row_widget)
+        rows_layout.addStretch(1)
+        self.config_scroll_area.setWidget(content)
+        panel_layout.addWidget(self.config_scroll_area, 1)
+        self.config_category_combo.currentIndexChanged.connect(self.filter_config_rows)
+        self.update_config_language()
+
+    def update_config_language(self):
+        zh = self.language == "zh"
+        self.config_category_combo.setItemText(0, "全部功能" if zh else "All Functions")
+        for index, (title_zh, title_en, _entries) in enumerate(CONFIG_CATEGORIES, 1):
+            self.config_category_combo.setItemText(index, title_zh if zh else title_en)
+        for row in self.config_rows:
+            row["send_button"].setText(self.tr_text("send"))
+            if row["query_button"] is not None:
+                row["query_button"].setText("查询" if zh else "Query")
+            description = row["description_zh"] if zh else row["description_en"]
+            label = f"{description}（{row['function']}）" if zh else f"{description} ({row['function']})"
+            row["name"].setText(label)
+            row["name"].setToolTip(label)
+        self.filter_config_rows()
+
+    def filter_config_rows(self, *_args):
+        category = self.config_category_combo.currentData()
+        number = 0
+        for row in self.config_rows:
+            visible = category == -1 or row["category"] == category
+            row["widget"].setVisible(visible)
+            if visible:
+                number += 1
+                row["number"].setText(str(number))
+                row["number"].setFixedWidth(row["number"].fontMetrics().horizontalAdvance(str(number)))
+        self.config_scroll_area.verticalScrollBar().setValue(0)
+
+    def send_config_command(self, row, query=False):
+        function = row["function"]
+        if function == "AT+RESETCONFIG":
+            command = function
+        else:
+            command = f"AT+CONFIG={function}"
+            if not query:
+                value = row["input"].text().strip()
+                if not value:
+                    message = f"请输入 {function} 的参数" if self.language == "zh" else f"Enter a value for {function}"
+                    self.set_status(message)
+                    QMessageBox.warning(self, "参数不能为空" if self.language == "zh" else "Value Required", message)
+                    row["input"].setFocus()
+                    return False
+                command += f",{value}"
+        return self.send_routed_command(command, add_history=False, use_newline_checkbox=False)
+
     def build_status_bar(self):
         self.status_label = QLabel(self.tr_text("ready"))
         self.status_label.setObjectName("statusLabel")
@@ -1572,13 +3060,13 @@ class SerialPortTool(QWidget):
                 font-family: "Segoe UI", "Microsoft YaHei";
                 font-size: 10pt;
             }
-            QLineEdit, QComboBox, QTextEdit {
+            QLineEdit, QComboBox, QTextEdit, QPlainTextEdit {
                 border: 1px solid #b8c0cc;
                 border-radius: 4px;
                 padding: 4px;
                 background: #ffffff;
             }
-            QTextEdit {
+            QTextEdit, QPlainTextEdit {
                 background: #fbfcfe;
                 border-color: #b8c0cc;
             }
@@ -1596,7 +3084,12 @@ class SerialPortTool(QWidget):
             }
             QPushButton#sideToggleButton {
                 padding: 0px;
-                font-weight: 700;
+                font-weight: normal;
+            }
+            QPushButton#sideToggleButton:checked {
+                color: #1f62c2;
+                background: #e6eef8;
+                border-color: #1f62c2;
             }
             QPushButton#historyDeleteButton {
                 color: #ffffff;
@@ -1668,10 +3161,10 @@ class SerialPortTool(QWidget):
                 border-color: #c6d0d8;
             }
             QSplitter::handle {
-                background: #d6dde7;
+                background: palette(window);
             }
             QSplitter::handle:hover {
-                background: #b7c4d5;
+                background: palette(window);
             }
             QSpinBox:disabled {
                 color: #26384d;
@@ -1702,8 +3195,40 @@ class SerialPortTool(QWidget):
         )
 
     def show_modify(self):
+        release_header = f"V {version} --{Compilation_date.replace('-', '')}\n"
         if self.language == "zh":
             modify_text = (
+                release_header +
+                "1. 顶部菜单增加分区查看，可在支持最大化和正常窗口层级的独立窗口中，以文件夹树展示设备分区。\n"
+                "2. 读取分区通过串口发送 AT+FILENAME?，响应仍正常显示并保存到主日志。\n"
+                "3. 支持按总分区数、分区序号、分区名称、文件数量、文件名和字节数解析多行响应。\n"
+                "4. 收齐全部分区后自动完成；5 秒超时会保留已读取内容，关闭窗口或断开串口会停止收集。\n"
+                "5. 读取分区前依次关闭设备日志通道、动态协商 MTU，再查询分区，减少运行日志插入响应。\n"
+                "6. 文件节点增加右键下载，按 MTU 分片读取原始字节，并在大小和 MD5 校验通过后保存。\n"
+                "7. 文件下载增加实时进度条，完成或失败后弹窗显示结果和保存路径。\n"
+                "8. 分区窗口改为左右分栏，文件支持右键缓存查看，并可切换纯文本和 HEX 显示。\n"
+                "9. 0 字节文件禁止查看和下载，直接显示明确提示且不发送文件传输命令。\n"
+                "10. 增加 DTR 和 RTS 独立开关，默认关闭，并保存设置供下次启动使用。\n"
+                "11. 串口写入成功后先记录发送命令，再记录写入期间收到的回显；界面和保存日志使用相同顺序。\n"
+                "12. 新增分区查看 GP03，复用当前串口；打开后设置日志通道并查询 MTU，再读取目录。与原分区查看互斥。\n"
+                "13. GP03 左侧显示目录树，中间显示文件，右侧显示预览。支持地址栏跳转、右键新建、下载、移动、重命名和删除，以及上传覆盖。\n"
+                "14. GP03 文件可双击或右键完整预览，支持文本与 HEX；HEX 以每行 16 字节显示偏移、字节和 ASCII。\n"
+                "15. 支持 UTF-8 文本编辑及 HEX 多行替换、插入和删除。HEX 输入自动分组及换行；保存先校验临时文件和原文件，再替换设备文件。\n"
+                "16. 双击 LZ4 文件在后台解压并只读预览，支持文本和 HEX；下载仍保留原始压缩文件。\n\n"
+                "V 19.0 --GNN-20261118\n"
+                "1. 侧栏拆分为竖排 AT 和 CONFIG 两个入口，普通字重，分隔条与面板留白底色一致，互斥展开，使用相同宽度和拖动规则。\n"
+                "2. AT 保留原有命令和分组功能；切换面板时停止自动发送。\n"
+                "3. CONFIG 增加分类筛选及 37 个配置项，支持参数发送和查询，恢复出厂设置直接发送 AT+RESETCONFIG。\n"
+                "4. CONFIG 复用固定 AT 的串口发送方式和回车换行规则，发送记录以蓝色显示并写入正在保存的日志。\n"
+                "5. CONFIG 使用描述（函数名）的紧凑布局，长文字可拖宽侧栏或悬停查看，恢复出厂设置的文字和发送按钮同一行显示。\n"
+                "6. CONFIG 参数为空或只有空格时，发送会弹窗提示并定位输入框；查询不要求填写参数。\n"
+                "7. CONFIG 序号垂直居中并按数字宽度占位，与文字间隔为 2px；切换分类保留本次输入。\n"
+                "8. 更新标题及版本记录日期为 2026-11-18，标题增加内部工具提示和联系邮箱。\n"
+                "9. 串口发送移至后台线程并增加 2 秒写入超时，移除可能无限等待的主线程 flush。\n"
+                "10. F102/F103 数据通道发送移至后台线程，服务器超时不再阻塞界面。\n"
+                "11. 发送超时或串口错误时停止自动发送、断开异常串口并显示错误。\n"
+                "12. RL-Data 请求失败只记录失败并继续自动发送，不再终止后续命令；进度分别统计成功和失败。\n"
+                "13. 日志输出区右下角增加 Mangetic 半透明水印，尺寸约 240×80、不透明度 18%，窗口缩放时保持 14px 边距且鼠标事件穿透。\n\n"
                 "V 10.0\n"
                 "1. 优化长时间日志显示和串口读取缓存压力。\n"
                 "2. 完善基础日志过滤、保存和串口命令发送流程。\n"
@@ -1714,8 +3239,8 @@ class SerialPortTool(QWidget):
                 "4. 日志保存使用 append 持续写入，避免外部清空文件后产生空字节。\n"
                 "5. 增加日志分卷：单文件超过 100MB 后扩展为 -extend-N。\n"
                 "6. 定时刷新保存日志大小，并重新打开文件句柄，便于 Windows 更新文件大小。\n"
-                "7. 增加 Windows AppUserModelID，并沿用 icon.ico 作为窗口和任务栏图标。\n"
-                "\nV 12.0 --Mangetic-20260716\n"
+                "7. 增加 Windows AppUserModelID，并使用 richlink_serial_tool.ico 作为窗口和任务栏图标。\n"
+                "\nV 12.0 --GNN-20260716\n"
                 "1. Filter 增加 Keyword / Regex 模式下拉框，Keyword 支持逗号分隔，Regex 支持正则表达式。\n"
                 "2. F102/F103 命令走 8088 数据通道，其他命令继续走串口通道。\n"
                 "3. F102/F103 命令不追加回车换行，输入框以 F102/F103 开头时显示蓝色。\n"
@@ -1729,7 +3254,7 @@ class SerialPortTool(QWidget):
                 "2. 主界面按钮、标签、输入提示、常用弹窗和状态栏提示支持即时切换。\n"
                 "3. 语言选择保存到 tool_data/tool_settings.json，下次打开自动沿用。\n"
                 "4. 工具运行数据统一保存到同目录 tool_data 文件夹，避免和 EXE 放在一起显得杂乱。\n"
-                "\nV 14.0 --Mangetic-20260803\n"
+                "\nV 14.0 --GNN-20260803\n"
                 "1. Fixed AT 右侧面板支持鼠标拖动调整宽度，并随窗口大小在 315/360 宽度之间切换。\n"
                 "2. Fixed AT 增加 5 个分组，每组独立保存命令、勾选状态和行数。\n"
                 "3. Fixed AT 支持增加/删除空白底部行，默认 10 行，最大 100 行。\n"
@@ -1739,29 +3264,60 @@ class SerialPortTool(QWidget):
                 "7. 日志显示默认轻量保留 3000 行，手动查看历史时扩展到 30000 行，回到底部后恢复轻量裁剪。\n"
                 "8. Setting 增加时间戳显示开关和 Text / HEX 数据显示模式；HEX 模式下 UI 和保存文件均按 HEX 输出。\n"
                 "9. 串口下拉框支持显示 COM 全名，并按 COM 号优先展示。\n"
-                "\nV 15.0 --Mangetic-20260817\n"
+                "\nV 15.0 --GNN-20260817\n"
                 "1. 底部 AT 命令历史支持备注格式：命令 -->备注。\n"
                 "2. 历史下拉框按命令列和备注列对齐显示；选择历史项时只回填命令部分。\n"
                 "3. 实际发送只使用 --> 前面的命令，备注不会发送到串口、HEX 或 F102/F103 数据通道。\n"
                 "4. 修复工具刚打开后，下拉框第一条历史命令需要先选其他项才能回填的问题。\n"
                 "5. 开始保存日志后增加 5 秒单次大小刷新，之后仍保持 1 分钟常规刷新。\n"
-                "\nV 16.0 --Mangetic-20260908\n"
+                "\nV 16.0 --GNN-20260908\n"
                 "1. Setting 增加颜色格式功能，默认所有规则关闭。\n"
                 "2. 颜色格式支持多行规则，每一行都有独立的应用开关、关键字和颜色。\n"
                 "3. 每行关键字支持英文逗号分隔，命中任意关键字后整行按该行颜色显示。\n"
                 "4. 颜色格式规则保存到 tool_data/tool_settings.json，下次打开可继续使用或修改。\n"
                 "5. 工具运行配置合并到 tool_data/tool_settings.json，兼容旧版本零散配置文件迁移。\n"
                 "6. Setting 增加字体显示功能，可修改日志区域字体和字号，并保存到 tool_data/tool_settings.json。\n"
-                "\nV 17.0 --Mangetic-20260928\n"
+                "\nV 17.0 --GNN-20260928\n"
                 "1. Setting 增加日志行数设置，可配置自动滚动显示行数和历史查看缓存行数。\n"
                 "2. 默认值调整为 3000 / 20000，两个参数范围均为 1-99999。\n"
                 "3. 自动滚动显示行数只能小于或等于历史查看缓存行数，配置保存后立即生效。\n"
-                "\nV 18.0 --Mangetic-20260929\n"
+                "\nV 18.0 --GNN-20260929\n"
                 "1. 过滤关键字、正则模式和 Aa 大小写开关在停止操作 1 秒后生效，输入过程中继续使用上一条已生效规则。\n"
                 "2. 延迟生效只影响新到达日志，不重新刷新历史日志；日志接收和保存不受影响。\n"
             )
         else:
             modify_text = (
+                release_header +
+                "1. Add Partition View in an independent, maximizable window with normal window stacking and a folder tree.\n"
+                "2. Read partitions by sending AT+FILENAME? over serial while keeping the response in the main display and saved log.\n"
+                "3. Parse multiline responses by partition count, index, name, file count, file name, and byte size.\n"
+                "4. Complete after all partitions arrive; retain partial results after a 5-second timeout and stop collection when closed or disconnected.\n"
+                "5. Disable device log output and negotiate MTU before querying partitions to prevent runtime logs from corrupting responses.\n"
+                "6. Add file download to the tree context menu, transfer raw bytes in MTU-sized chunks, and save only after size and MD5 validation.\n"
+                "7. Show live download progress and display the result and saved path when the transfer finishes or fails.\n"
+                "8. Split the partition window into a file tree and a cached preview pane with Text and HEX modes.\n"
+                "9. Block viewing and downloading 0-byte files with a clear message and no transfer command.\n"
+                "10. Add independent DTR and RTS controls, disabled by default and saved for future sessions.\n"
+                "11. Record successful serial sends before replies received during the write, both on screen and in saved logs.\n"
+                "12. Add GP03 File System using the existing serial connection. Set the log channel and query MTU before listing files; keep this window mutually exclusive with Partition View.\n"
+                "13. Arrange GP03 as a folder tree, file list, and preview. Add address navigation, context-menu creation, downloads, moves, renames, deletion, and upload with overwrite.\n"
+                "14. Preview complete files from double-click or the context menu in Text or HEX. HEX shows offsets, bytes, and ASCII in 16-byte rows.\n"
+                "15. Edit UTF-8 text or replace, insert, and delete HEX bytes across rows. Format HEX as it is entered; saving verifies the temporary and original files before replacement.\n"
+                "16. Double-click LZ4 files for background decompression and read-only Text/HEX preview. Downloads keep the original compressed file.\n\n"
+                "V 19.0 --GNN-20261118\n"
+                "1. Add mutually exclusive AT and CONFIG side panels with matching width and resize behavior.\n"
+                "2. Keep the original AT controls. Use normal-weight vertical labels and a divider matching the panel background; stop auto send when switching panels.\n"
+                "3. Add category filtering and 37 CONFIG entries with value sending and queries; factory reset sends AT+RESETCONFIG directly.\n"
+                "4. CONFIG uses the existing fixed AT serial sending and CRLF rules; sent commands appear in blue and are written to the active log file.\n"
+                "5. Use compact description (function) labels; widen the sidebar or hover for long text. Show factory reset and its Send button on one line.\n"
+                "6. Show a warning and focus the input when a sent value is empty or whitespace; queries do not require a value.\n"
+                "7. Center row numbers vertically, size them to their digits, and leave a 2px text gap. Retain session inputs when changing categories.\n"
+                "8. Update the title and release date to 2026-11-18 and add the internal-use notice and contact email.\n"
+                "9. Move serial writes to a background worker, add a 2-second write timeout, and remove the blocking UI-thread flush.\n"
+                "10. Move F102/F103 data-channel requests to a background worker so server timeouts do not freeze the UI.\n"
+                "11. Stop Auto Send, disconnect the faulty serial port, and report an error after a send timeout or serial failure.\n"
+                "12. Record RL-Data request failures and continue Auto Send; report separate success and failure counts.\n"
+                "13. Add a 240×80 Mangetic watermark at 18% opacity in the log view, maintaining a 14px bottom-right margin and passing through mouse events.\n\n"
                 "V 10.0\n"
                 "1. Optimize long-running log display and reduce serial read buffer pressure.\n"
                 "2. Improve basic log filtering, saving, and serial command workflows.\n"
@@ -1772,8 +3328,8 @@ class SerialPortTool(QWidget):
                 "4. Save log in append mode to avoid empty-byte issues after external file clearing.\n"
                 "5. Add log file rotation: files larger than 100MB are extended as -extend-N.\n"
                 "6. Refresh saved log file size periodically and reopen the file handle to help Windows update file size.\n"
-                "7. Add Windows AppUserModelID and keep icon.ico for window/taskbar icon.\n"
-                "\nV 12.0 --Mangetic-20260716\n"
+                "7. Add Windows AppUserModelID and use richlink_serial_tool.ico for window/taskbar icon.\n"
+                "\nV 12.0 --GNN-20260716\n"
                 "1. Add Keyword / Regex filter mode dropdown. Keyword uses comma separation; Regex uses regular-expression syntax such as ERROR|FAIL.\n"
                 "2. Add F102/F103 data-channel routing through the 8088 API; other commands continue to use the serial channel.\n"
                 "3. F102/F103 commands do not append CR/LF, and AT inputs turn blue when they start with F102/F103.\n"
@@ -1787,7 +3343,7 @@ class SerialPortTool(QWidget):
                 "2. Main buttons, labels, placeholders, common dialogs, and status messages can switch immediately.\n"
                 "3. Language selection is saved to tool_data/tool_settings.json and restored on next launch.\n"
                 "4. Runtime data files are stored under the tool_data folder beside the executable to keep the EXE folder clean.\n"
-                "\nV 14.0 --Mangetic-20260803\n"
+                "\nV 14.0 --GNN-20260803\n"
                 "1. The Fixed AT right panel can be resized with the mouse and adapts between 315/360 width by window size.\n"
                 "2. Fixed AT adds 5 groups. Each group saves its own commands, check states, and row count.\n"
                 "3. Fixed AT supports Add/Delete for empty bottom rows, default 10 rows, maximum 100 rows.\n"
@@ -1797,24 +3353,24 @@ class SerialPortTool(QWidget):
                 "7. Log display keeps 3000 lines in normal mode, expands to 30000 while reading history, and returns to light trimming at the bottom.\n"
                 "8. Setting adds timestamp display and Text / HEX data display mode. HEX display writes both UI and saved logs as HEX.\n"
                 "9. The Port dropdown supports full Windows COM names and shows the COM number first.\n"
-                "\nV 15.0 --Mangetic-20260817\n"
+                "\nV 15.0 --GNN-20260817\n"
                 "1. Bottom AT command history supports command remarks with the format: command -->remark.\n"
                 "2. The history dropdown displays command and remark in aligned columns; selecting a history item only fills the command part.\n"
                 "3. Sending still uses only the command before -->, so remarks are not sent to serial, HEX, or F102/F103 data channel.\n"
                 "4. Fix the first history item not filling the AT command input after the tool starts.\n"
                 "5. Add a one-shot log size refresh 5 seconds after saving starts, then keep the normal 1-minute refresh interval.\n"
-                "\nV 16.0 --Mangetic-20260908\n"
+                "\nV 16.0 --GNN-20260908\n"
                 "1. Add Color Format under Setting. All rules are disabled by default.\n"
                 "2. Color Format supports multiple rules. Each row has its own Apply checkbox, keywords, and color.\n"
                 "3. Each row supports comma-separated keywords. A line matching any keyword is displayed with that row color.\n"
                 "4. Color rules are saved to tool_data/tool_settings.json and can be reused or edited next time.\n"
                 "5. Runtime settings are merged into tool_data/tool_settings.json, with migration compatibility for older separate files.\n"
                 "6. Add Font Display under Setting to change the log view font family and size, saved in tool_data/tool_settings.json.\n"
-                "\nV 17.0 --Mangetic-20260928\n"
+                "\nV 17.0 --GNN-20260928\n"
                 "1. Add Log Line Limits under Setting for auto-scroll display and history cache limits.\n"
                 "2. Change defaults to 3000 / 20000; both values support a range of 1-99999.\n"
                 "3. Auto-scroll display lines must be less than or equal to history cache lines; saved changes apply immediately.\n"
-                "\nV 18.0 --Mangetic-20260929\n"
+                "\nV 18.0 --GNN-20260929\n"
                 "1. Filter keywords, Regex mode, and the Aa case option apply 1 second after input stops; the previous active rule remains in use while typing.\n"
                 "2. Delayed application only affects newly received logs and does not refresh history; log receiving and saving continue normally.\n"
             )
@@ -1886,7 +3442,7 @@ class SerialPortTool(QWidget):
             "<div style='text-align: left;'>"
             "Rich link Serial Port Tool<br><br>"
             "Version " + version + "<br><br>"
-            "Developed by Mangetic<br><br>"
+            "Developed by GNN<br><br>"
             "Compilation date " + Compilation_date +
             "</div>"
         )
@@ -1968,7 +3524,8 @@ class SerialPortTool(QWidget):
 
         at_input = QLineEdit()
         row_index = len(self.fixed_at_rows) + 1
-        at_input.setPlaceholderText(self.tr_text("at_command_row_placeholder_fmt", index=row_index))
+        placeholder_key = "at_command_row_placeholder_fmt"
+        at_input.setPlaceholderText(self.tr_text(placeholder_key, index=row_index))
         at_input.setAlignment(Qt.AlignLeft)
         at_input.setFixedHeight(26)
         at_input.setText(command)
@@ -1977,7 +3534,7 @@ class SerialPortTool(QWidget):
         at_input.textChanged.connect(lambda _text, inp=at_input: self.update_command_color(inp))
 
         send_btn = QPushButton(self.tr_text("send"))
-        send_btn.setFixedWidth(54)
+        send_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
         send_btn.setFixedHeight(26)
         send_btn.clicked.connect(lambda _, inp=at_input: self.send_fixed_command(inp))
 
@@ -2009,6 +3566,7 @@ class SerialPortTool(QWidget):
         while self.fixed_at_rows:
             row = self.fixed_at_rows.pop()
             self.fixed_at_rows_layout.removeWidget(row["widget"])
+            row["widget"].hide()
             row["widget"].deleteLater()
         self.fixed_at_inputs.clear()
 
@@ -2121,6 +3679,10 @@ class SerialPortTool(QWidget):
         self.auto_send_index = 0
         self.auto_send_total = len(self.auto_send_queue)
         self.auto_send_success_count = 0
+        self.auto_send_failure_count = 0
+        self.auto_send_run_id += 1
+        self.auto_send_outstanding = 0
+        self.auto_send_queue_finished = False
         self.auto_send_commands_per_round = len(selected_commands)
         self.auto_send_active = True
         self.auto_send_button.setText(self.tr_text("stop_auto"))
@@ -2137,14 +3699,14 @@ class SerialPortTool(QWidget):
             return
 
         if self.auto_send_index >= len(self.auto_send_queue):
-            self.stop_auto_send(self.tr_text("auto_send_completed"))
+            self.auto_send_queue_finished = True
+            self.complete_auto_send_if_idle(self.auto_send_run_id)
             return
 
         command = self.auto_send_queue[self.auto_send_index]
-        self.auto_send_index += 1
-
-        if self.send_routed_command(command, add_history=False):
-            self.auto_send_success_count += 1
+        run_id = self.auto_send_run_id
+        if self.send_routed_command(command, add_history=False, auto_run_id=run_id):
+            self.auto_send_index += 1
         else:
             self.stop_auto_send(self.tr_text("auto_send_failed"))
             return
@@ -2154,6 +3716,16 @@ class SerialPortTool(QWidget):
         if self.auto_send_index < len(self.auto_send_queue):
             self.auto_send_timer.start(self.auto_interval_spin.value())
         else:
+            self.auto_send_queue_finished = True
+            self.complete_auto_send_if_idle(run_id)
+
+    def complete_auto_send_if_idle(self, run_id):
+        if (
+            self.auto_send_active
+            and run_id == self.auto_send_run_id
+            and self.auto_send_queue_finished
+            and self.auto_send_outstanding == 0
+        ):
             self.stop_auto_send(self.tr_text("auto_send_completed"))
 
     def stop_auto_send(self, message):
@@ -2164,7 +3736,10 @@ class SerialPortTool(QWidget):
         self.auto_send_active = False
         self.auto_send_total = 0
         self.auto_send_success_count = 0
+        self.auto_send_failure_count = 0
         self.auto_send_commands_per_round = 0
+        self.auto_send_outstanding = 0
+        self.auto_send_queue_finished = False
         self.auto_send_button.setText(self.tr_text("auto_send"))
         self.set_auto_send_running(False)
         self.auto_interval_spin.setEnabled(True)
@@ -2183,32 +3758,92 @@ class SerialPortTool(QWidget):
 
         attempted = min(self.auto_send_index, total)
         success = min(self.auto_send_success_count, attempted)
+        failed = min(self.auto_send_failure_count, attempted)
         if self.auto_send_commands_per_round > 0:
             round_index = ((attempted - 1) // self.auto_send_commands_per_round) + 1 if attempted else 1
             command_index = ((attempted - 1) % self.auto_send_commands_per_round) + 1 if attempted else 1
             round_total = self.auto_count_spin.value()
             if self.language == "zh":
                 return (
-                    f"{prefix}: {attempted}/{total}, 成功 {success}, "
+                    f"{prefix}: {attempted}/{total}, 成功 {success}, 失败 {failed}, "
                     f"轮次 {round_index}/{round_total}, 命令 {command_index}/{self.auto_send_commands_per_round}"
                 )
             return (
-                f"{prefix}: {attempted}/{total}, ok {success}, "
+                f"{prefix}: {attempted}/{total}, ok {success}, failed {failed}, "
                 f"round {round_index}/{round_total}, cmd {command_index}/{self.auto_send_commands_per_round}"
             )
 
         if self.language == "zh":
-            return f"{prefix}: {attempted}/{total}, 成功 {success}"
-        return f"{prefix}: {attempted}/{total}, ok {success}"
+            return f"{prefix}: {attempted}/{total}, 成功 {success}, 失败 {failed}"
+        return f"{prefix}: {attempted}/{total}, ok {success}, failed {failed}"
 
     def get_fixed_at_expanded_width(self):
         if self.width() >= FIXED_AT_WIDE_WINDOW_THRESHOLD:
             return FIXED_AT_WIDE_EXPANDED_WIDTH
         return FIXED_AT_COMPACT_EXPANDED_WIDTH
 
+    def setup_log_watermark(self):
+        source = QPixmap(resource_path("bulid_photos/Mangetic.png"))
+        if source.isNull():
+            self.log_watermark = None
+            return
+
+        scaled = source.scaled(
+            LOG_WATERMARK_WIDTH,
+            LOG_WATERMARK_HEIGHT,
+            Qt.KeepAspectRatio,
+            Qt.SmoothTransformation,
+        )
+        transparent = QPixmap(scaled.size())
+        transparent.fill(Qt.transparent)
+        painter = QPainter(transparent)
+        painter.setOpacity(LOG_WATERMARK_OPACITY)
+        painter.drawPixmap(0, 0, scaled)
+        painter.end()
+
+        self.log_watermark = QLabel(self.log_container)
+        self.log_watermark.setPixmap(transparent)
+        self.log_watermark.setFixedSize(transparent.size())
+        self.log_watermark.setStyleSheet("background: transparent; border: none; padding: 0;")
+        self.log_watermark.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.log_watermark.setFocusPolicy(Qt.NoFocus)
+        self.log_container.installEventFilter(self)
+        self.log_text.viewport().installEventFilter(self)
+        self.position_log_watermark()
+        self.log_watermark.show()
+        self.log_watermark.raise_()
+
+    def position_log_watermark(self):
+        if not getattr(self, "log_watermark", None):
+            return
+
+        viewport = self.log_text.viewport()
+        viewport_origin = viewport.mapTo(self.log_container, QPoint(0, 0))
+        x = max(
+            0,
+            viewport_origin.x() + viewport.width()
+            - self.log_watermark.width() - LOG_WATERMARK_MARGIN,
+        )
+        y = max(
+            0,
+            viewport_origin.y() + viewport.height()
+            - self.log_watermark.height() - LOG_WATERMARK_MARGIN,
+        )
+        self.log_watermark.move(x, y)
+        self.log_watermark.raise_()
+
+    def eventFilter(self, watched, event):
+        if (
+            hasattr(self, "log_container")
+            and watched in (self.log_container, self.log_text.viewport())
+            and event.type() in (QEvent.Resize, QEvent.Show)
+        ):
+            self.position_log_watermark()
+        return super().eventFilter(watched, event)
+
     def resizeEvent(self, event):
         super().resizeEvent(event)
-        if not hasattr(self, "scroll_area") or not self.scroll_area.isVisible():
+        if not hasattr(self, "command_panel_content") or not self.command_panel_content.isVisible():
             return
 
         expanded_width = self.get_fixed_at_expanded_width()
@@ -2220,9 +3855,33 @@ class SerialPortTool(QWidget):
             self.content_splitter.setSizes([max(400, total_width - expanded_width), expanded_width])
 
     def toggle_fixed_at_commands(self):
-        visible = not self.scroll_area.isVisible()
-        self.scroll_area.setVisible(visible)
-        self.side_button.setText("》" if visible else "+\n+\n+")
+        self.toggle_command_panel("at")
+
+    def update_command_panel_buttons(self):
+        labels = {"at": "A\nT", "config": "C\nO\nN\nF\nI\nG"}
+        expanded = not self.command_panel_content.isHidden()
+        for kind, button in self.command_panel_buttons.items():
+            button.setText(labels[kind])
+            button.setToolTip("AT" if kind == "at" else "CONFIG")
+            button.setChecked(expanded and self.command_panel_kind == kind)
+        self.fixed_at_group.setTitle(self.tr_text("fixed_at_commands"))
+
+    def toggle_command_panel(self, panel_kind):
+        if panel_kind not in ("at", "config"):
+            return
+
+        expanded = not self.command_panel_content.isHidden()
+        switching = panel_kind != self.command_panel_kind
+        if switching:
+            if self.auto_send_active:
+                self.stop_auto_send(self.tr_text("command_panel_changed"))
+            self.save_fixed_at_commands()
+            self.command_panel_kind = panel_kind
+            self.command_panel_content.setCurrentWidget(self.scroll_area if panel_kind == "at" else self.config_panel)
+
+        visible = switching or not expanded
+        self.command_panel_content.setVisible(visible)
+        self.update_command_panel_buttons()
         if visible:
             self.fixed_at_panel_shell.setMaximumWidth(16777215)
             expanded_width = self.get_fixed_at_expanded_width()
@@ -2264,12 +3923,15 @@ class SerialPortTool(QWidget):
             self.disconnect_serial(show_status=False)
 
         baudrate_int = int(baudrate)
-        self.serial_thread = SerialReader(port, baudrate_int)
-        self.serial_thread.data_received.connect(self.update_log)
+        modem_lines = (self.dtr_checkbox.isChecked(), self.rts_checkbox.isChecked())
+        self.serial_thread = SerialReader(port, baudrate_int, modem_lines)
+        self.serial_thread.log_events.connect(self.process_serial_log_events, Qt.QueuedConnection)
+        self.serial_thread.raw_data_received.connect(self.handle_file_download_raw_data)
         self.serial_thread.error_occurred.connect(
             lambda error_message, thread=self.serial_thread: self.show_error(error_message, thread)
         )
         self.serial_thread.start()
+        self.serial_sender = BackgroundSerialSender(self.serial_thread)
 
         self.last_port = port
         self.last_baudrate = baudrate_int
@@ -2280,12 +3942,23 @@ class SerialPortTool(QWidget):
 
     def disconnect_serial(self, show_status=True):
         auto_send_was_active = self.auto_send_active
+        if self.gp03_io_active:
+            self.abort_gp03_io()
         if self.auto_send_active:
             self.stop_auto_send(self.tr_text("auto_send_serial_disconnected"))
+        if self.partition_reading:
+            self.reset_partition_read(self.tr_text("partition_disconnected"))
+        if self.file_download_active:
+            self.fail_partition_file_download(self.tr_text("partition_disconnected"))
+
+        if self.serial_sender:
+            self.serial_sender.stop()
+            self.serial_sender = None
+        self.pending_serial_sends.clear()
 
         if self.serial_thread:
             self.serial_thread.stop()
-            self.serial_thread.wait()
+            self.serial_thread.wait(3000)
             self.serial_thread = None
 
         self.connect_button.setEnabled(True)
@@ -2297,7 +3970,20 @@ class SerialPortTool(QWidget):
             else:
                 self.set_status(self.tr_text("disconnected"))
 
+    def process_serial_log_events(self, write_result, received_lines):
+        source_thread = self.sender()
+        if write_result is not None and write_result[2] and source_thread is self.serial_thread:
+            self.process_serial_send_result(*write_result)
+        for line in received_lines:
+            self.update_log(*line)
+        if write_result is not None and not write_result[2] and source_thread is self.serial_thread:
+            self.process_serial_send_result(*write_result)
+
     def update_log(self, timestamp, text_data, hex_data):
+        self.handle_partition_control_response(text_data)
+        self.parse_partition_response(text_data)
+        if self.file_download_active:
+            return
         display_data = hex_data if self.display_hex_enabled else text_data
         log_line = self.format_log_line(timestamp, display_data)
         matched = self.is_log_matched(log_line)
@@ -2354,14 +4040,22 @@ class SerialPortTool(QWidget):
         if source_thread is not None and source_thread is not self.serial_thread:
             return
 
+        if self.gp03_io_active:
+            self.abort_gp03_io()
         auto_send_was_active = self.auto_send_active
         if self.auto_send_active:
             self.stop_auto_send(self.tr_text("auto_send_serial_error"))
+        if self.file_download_active:
+            self.fail_partition_file_download(error_message)
 
         self.append_error(f"Error: {error_message}")
+        if self.serial_sender:
+            self.serial_sender.stop()
+            self.serial_sender = None
+        self.pending_serial_sends.clear()
         if self.serial_thread:
             self.serial_thread.stop()
-            self.serial_thread.wait()
+            self.serial_thread.wait(3000)
             self.serial_thread = None
         self.connect_button.setEnabled(True)
         self.disconnect_button.setEnabled(False)
@@ -2589,28 +4283,59 @@ class SerialPortTool(QWidget):
 
         self.send_routed_command(cleaned_command, add_history=False, use_newline_checkbox=False)
 
-    def send_routed_command(self, cleaned_command, add_history=False, use_newline_checkbox=False, use_hex=False):
+    def send_routed_command(
+        self,
+        cleaned_command,
+        add_history=False,
+        use_newline_checkbox=False,
+        use_hex=False,
+        auto_run_id=None,
+        internal_transfer=False,
+    ):
+        if (self.partition_reading or self.file_download_active) and not internal_transfer:
+            QMessageBox.information(
+                self,
+                self.tr_text("partition_view_title"),
+                self.tr_text("partition_transfer_busy"),
+            )
+            return False
         if use_hex:
             hex_payload = self.parse_hex_command(cleaned_command)
             if hex_payload is None:
                 QMessageBox.warning(self, self.tr_text("invalid_hex_title"), self.tr_text("invalid_hex_msg"))
                 return False
+            if self.gp03_io_active:
+                self.set_status(
+                    "GP03 file operation is using the serial port."
+                    if self.language == "en" else "GP03 文件操作正在独占串口，请等待完成。"
+                )
+                return False
 
-            if self.write_serial_bytes(hex_payload):
+            if self.write_serial_bytes(
+                hex_payload,
+                self.normalize_hex_display(cleaned_command),
+                "HEX",
+                auto_run_id=auto_run_id,
+            ):
                 if add_history:
                     self.add_command_history(cleaned_command)
-                self.append_sent_log(self.normalize_hex_display(cleaned_command), "HEX")
                 return True
             return False
 
         protocol_command = self.normalize_protocol_command(cleaned_command)
 
         if self.is_protocol_data_command(protocol_command):
-            if self.write_data_channel_command(protocol_command):
+            if self.write_data_channel_command(protocol_command, auto_run_id=auto_run_id):
                 if add_history:
                     self.add_command_history(cleaned_command)
-                self.append_sent_log(protocol_command, "Data")
                 return True
+            return False
+
+        if self.gp03_io_active:
+            self.set_status(
+                "GP03 file operation is using the serial port."
+                if self.language == "en" else "GP03 文件操作正在独占串口，请等待完成。"
+            )
             return False
 
         command = cleaned_command
@@ -2620,10 +4345,9 @@ class SerialPortTool(QWidget):
         else:
             command += "\r\n"
 
-        if self.write_serial_command(command):
+        if self.write_serial_command(command, cleaned_command, auto_run_id=auto_run_id):
             if add_history:
                 self.add_command_history(cleaned_command)
-            self.append_sent_log(cleaned_command, "Serial")
             return True
 
         return False
@@ -2652,7 +4376,7 @@ class SerialPortTool(QWidget):
         compact_command = re.sub(r"[\s,;:_-]+", "", compact_command).upper()
         return " ".join(compact_command[index:index + 2] for index in range(0, len(compact_command), 2))
 
-    def write_data_channel_command(self, command):
+    def write_data_channel_command(self, command, auto_run_id=None):
         imei = self.imei_input.text().strip()
         if not imei:
             QMessageBox.warning(self, self.tr_text("missing_imei_title"), self.tr_text("missing_imei_msg"))
@@ -2663,17 +4387,22 @@ class SerialPortTool(QWidget):
             return False
 
         payload = {"imei": int(imei), "cmd": command}
-
-        try:
-            resp = requests.post(SEND_URL, json=payload, timeout=10)
-            resp.raise_for_status()
+        request_id = self.next_send_request_id()
+        self.pending_data_sends[request_id] = (command, auto_run_id)
+        if auto_run_id is not None:
+            self.auto_send_outstanding += 1
+        if self.data_sender.submit(request_id, payload):
             return True
-        except requests.RequestException as e:
-            self.append_error(self.tr_text("data_channel_failed_fmt", error=e))
-            return False
 
-    def append_sent_log(self, command, channel):
-        timestamp = format_log_timestamp()
+        self.pending_data_sends.pop(request_id, None)
+        if auto_run_id is not None:
+            self.auto_send_outstanding = max(0, self.auto_send_outstanding - 1)
+        self.append_error(self.tr_text("data_channel_failed_fmt", error="sender unavailable"))
+        return False
+
+    def append_sent_log(self, command, channel, timestamp=None):
+        if timestamp is None:
+            timestamp = format_log_timestamp()
         channel = {"Data": "RL-Data", "Serial": "RL-Serial"}.get(channel, channel)
         if self.language == "zh":
             body = f"已发送[{channel}]: {command}"
@@ -2684,21 +4413,94 @@ class SerialPortTool(QWidget):
         if self.log_file:
             self.write_log_line(message)
 
-    def write_serial_command(self, command):
-        return self.write_serial_bytes(command.encode("utf-8"))
+    def write_serial_command(self, command, display_command, auto_run_id=None):
+        return self.write_serial_bytes(
+            command.encode("utf-8"),
+            display_command,
+            "Serial",
+            auto_run_id=auto_run_id,
+        )
 
-    def write_serial_bytes(self, payload):
+    def write_serial_bytes(self, payload, display_command, channel, auto_run_id=None):
         if not self.is_serial_connected():
             QMessageBox.warning(self, self.tr_text("not_connected_title"), self.tr_text("not_connected_msg"))
             return False
 
-        try:
-            self.serial_thread.serial.write(payload)
-            self.serial_thread.serial.flush()
-            return True
-        except (serial.SerialException, OSError) as e:
-            self.show_error(str(e))
+        if not self.serial_sender:
+            self.show_error("Serial sender is unavailable")
             return False
+
+        request_id = self.next_send_request_id()
+        self.pending_serial_sends[request_id] = (display_command, channel, auto_run_id)
+        if auto_run_id is not None:
+            self.auto_send_outstanding += 1
+        if self.serial_sender.submit(request_id, payload):
+            return True
+
+        pending_send = self.pending_serial_sends.pop(request_id, None)
+        if pending_send and pending_send[2] is not None:
+            self.auto_send_outstanding = max(0, self.auto_send_outstanding - 1)
+        self.show_error("Serial sender is unavailable")
+        return False
+
+    def next_send_request_id(self):
+        self.send_request_id += 1
+        return self.send_request_id
+
+    def process_serial_send_result(self, request_id, timestamp, success, error):
+        pending_send = self.pending_serial_sends.pop(request_id, None)
+        if pending_send is None:
+            return
+        command, channel, auto_run_id = pending_send
+        active_auto_request = (
+            auto_run_id is not None
+            and self.auto_send_active
+            and auto_run_id == self.auto_send_run_id
+        )
+        if active_auto_request:
+            self.auto_send_outstanding = max(0, self.auto_send_outstanding - 1)
+        if success:
+            self.append_sent_log(command, channel, timestamp)
+            if active_auto_request:
+                self.auto_send_success_count += 1
+                self.update_auto_send_status(self.tr_text("auto_sending"))
+                self.complete_auto_send_if_idle(auto_run_id)
+        else:
+            if active_auto_request:
+                self.auto_send_failure_count += 1
+                self.stop_auto_send(self.tr_text("auto_send_serial_error"))
+            self.show_error(error or "Serial write failed")
+
+    def process_data_send_results(self):
+        while True:
+            try:
+                request_id, success, error = self.data_sender.results.get_nowait()
+            except queue.Empty:
+                break
+
+            pending_send = self.pending_data_sends.pop(request_id, None)
+            if pending_send is None:
+                continue
+            command, auto_run_id = pending_send
+            active_auto_request = (
+                auto_run_id is not None
+                and self.auto_send_active
+                and auto_run_id == self.auto_send_run_id
+            )
+            if active_auto_request:
+                self.auto_send_outstanding = max(0, self.auto_send_outstanding - 1)
+            if success:
+                self.append_sent_log(command, "Data")
+                if active_auto_request:
+                    self.auto_send_success_count += 1
+                    self.update_auto_send_status(self.tr_text("auto_sending"))
+                    self.complete_auto_send_if_idle(auto_run_id)
+            else:
+                self.append_error(self.tr_text("data_channel_failed_fmt", error=error))
+                if active_auto_request:
+                    self.auto_send_failure_count += 1
+                    self.update_auto_send_status(self.tr_text("auto_send_data_failed"))
+                    self.complete_auto_send_if_idle(auto_run_id)
 
     def load_fixed_at_commands(self):
         loaded_groups = None
@@ -2730,10 +4532,11 @@ class SerialPortTool(QWidget):
             return
 
         self.sync_current_fixed_at_group()
-        self.settings["fixed_at"] = {
+        state = {
             "current_group": self.current_fixed_at_group,
             "groups": self.fixed_at_groups,
         }
+        self.settings["fixed_at"] = state
         self.save_tool_settings()
 
     def load_command_history(self):
@@ -2949,14 +4752,41 @@ class SerialPortTool(QWidget):
         self.status_label.setText(message)
 
     def closeEvent(self, event):
+        if self.gp03_dialog is not None and self.gp03_dialog.saving_preview:
+            event.ignore()
+            return
+        if self.gp03_dialog is not None and self.gp03_dialog.worker is not None:
+            self.gp03_close_pending = True
+            self.gp03_dialog.closing = True
+            self.gp03_dialog.cancel_operation()
+            self.abort_gp03_io()
+            event.ignore()
+            return
+        if self.gp03_dialog is not None and self.gp03_dialog.isVisible() and not self.gp03_dialog.close():
+            event.ignore()
+            return
         self.log_size_timer.stop()
         self.log_first_size_timer.stop()
         self.log_rotate_timer.stop()
         self.auto_send_timer.stop()
+        self.send_result_timer.stop()
+        self.partition_read_timer.stop()
+        self.file_download_timer.stop()
+        if self.gp03_io_active:
+            self.abort_gp03_io()
+        if self.file_download_active:
+            self.fail_partition_file_download("application closed", show_dialog=False)
+        if self.partition_dialog is not None:
+            self.partition_dialog.close()
+
+        if self.serial_sender:
+            self.serial_sender.stop()
+            self.serial_sender = None
+        self.data_sender.stop()
 
         if self.serial_thread:
             self.serial_thread.stop()
-            self.serial_thread.wait()
+            self.serial_thread.wait(3000)
             self.serial_thread = None
 
         if self.log_file:
@@ -2975,7 +4805,11 @@ class SerialPortTool(QWidget):
 def resource_path(relative_path):
     if hasattr(sys, "_MEIPASS"):
         return os.path.join(sys._MEIPASS, relative_path)
-    return os.path.join(os.path.abspath("."), relative_path)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    local_path = os.path.join(script_dir, relative_path)
+    if os.path.exists(local_path):
+        return local_path
+    return os.path.join(os.path.dirname(script_dir), relative_path)
 
 
 def set_windows_app_icon_id():
@@ -2991,7 +4825,7 @@ def set_windows_app_icon_id():
 if __name__ == "__main__":
     set_windows_app_icon_id()
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(resource_path("bulid_photos/icon.ico")))
+    app.setWindowIcon(QIcon(resource_path("bulid_photos/richlink_serial_tool.ico")))
     tool = SerialPortTool()
     tool.show()
     sys.exit(app.exec_())
